@@ -1,0 +1,29 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+/* Warm Paper & Editorial Palette */
+:root {
+  --bg-paper: #FBF9F5;
+  --bg-card: #FFFFFF;
+  --ink-primary: #1E2024;
+  --ink-secondary: #5E6573;
+  --ink-border: #E5E0D8;
+  --ink-border-focus: #1E2024;
+}
+
+body {
+  background-color: var(--bg-paper);
+  color: var(--ink-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom Paper Dotted Background */
+.paper-pattern {
+  background-image: radial-gradient(#D6D0C5 1px, transparent 1px);
+  background-size: 20px 20px;
+}
