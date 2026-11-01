@@ -12,6 +12,7 @@ import { ContextStripBar } from './components/ContextStripBar'
 import { PrunableInspectorDrawer } from './components/PrunableInspectorDrawer'
 import { HeaderNav, type StudioTab } from './components/HeaderNav'
 import { SessionReplayPage } from './pages/SessionReplayPage'
+import { CompactorLabPage } from './pages/CompactorLabPage'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
 
 // 注册自定义节点组件
@@ -181,6 +182,18 @@ export default function App() {
               </div>
             </>
           )}
+
+          {activeTab === 'replay' && (
+            <span className="text-xs text-[#8F887D] hidden lg:inline">
+              | 会话时序回溯 · 连续工具折叠 · 零侵入嗅探
+            </span>
+          )}
+
+          {activeTab === 'lab' && (
+            <span className="text-xs text-[#8F887D] hidden lg:inline">
+              | 确定性微压缩 (Head 15 + Tail 15) · WAL 指针回放 · Prompt Cache 字节级保真
+            </span>
+          )}
         </div>
 
         {/* 右侧动作控制区 */}
@@ -283,9 +296,13 @@ export default function App() {
               <span>清空</span>
             </button>
           </div>
-        ) : (
+        ) : activeTab === 'replay' ? (
           <div className="text-xs text-[#8F887D] font-mono hidden md:block">
             离线会话解析 · 0% 侵入式嗅探 · 因果拓扑时光回溯
+          </div>
+        ) : (
+          <div className="text-xs text-[#8F887D] font-mono hidden md:block">
+            确定性微压缩 · 零 LLM 开销 · 90% Prompt Cache 守护
           </div>
         )}
       </header>
@@ -342,9 +359,13 @@ export default function App() {
             onResolve={resolveCurrentGate}
           />
         </div>
-      ) : (
+      ) : activeTab === 'replay' ? (
         <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
           <SessionReplayPage />
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
+          <CompactorLabPage />
         </div>
       )}
     </div>

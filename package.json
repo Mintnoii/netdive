@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "tsx --test src/server/bridge.test.ts src/services/assertionEngine.test.ts src/services/microCompactor.test.ts src/services/transcriptParser.test.ts",
+    "test": "tsx --test src/server/bridge.test.ts src/services/assertionEngine.test.ts src/services/microCompactor.test.ts src/services/transcriptParser.test.ts src/pages/CompactorLabPage.test.ts",
     "preview": "vite preview",
     "start": "tsx src/server/index.ts",
     "test:workflow": "tsx scripts/test-workflow.ts",

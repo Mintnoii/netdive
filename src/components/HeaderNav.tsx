@@ -1,7 +1,7 @@
 import React from 'react'
 import { Activity, History } from 'lucide-react'
 
-export type StudioTab = 'live' | 'replay'
+export type StudioTab = 'live' | 'replay' | 'lab'
 
 export interface HeaderNavProps {
   activeTab: StudioTab
@@ -50,6 +50,19 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
         >
           <History className="w-3.5 h-3.5" />
           <span>会话时光机 (Replay)</span>
+        </button>
+
+        {/* 观测实验室 Tab */}
+        <button
+          onClick={() => onChangeTab('lab')}
+          className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
+            activeTab === 'lab'
+              ? 'bg-[#1E2024] text-[#FBF9F5] shadow-xs'
+              : 'text-[#6E685E] hover:text-[#1E2024] hover:bg-[#F7F5F0]'
+          }`}
+          title="微压缩上下文差分实验、WAL 离线指针回放与 Prompt Cache 前缀保真校验"
+        >
+          <span>📊 观测实验室 (Lab)</span>
         </button>
       </div>
     </div>
