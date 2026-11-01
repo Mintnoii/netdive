@@ -190,6 +190,8 @@ export type TelemetryEventType =
 export interface TelemetryObservation {
   exitCode: number
   output: string[]
+  pointerId?: string
+  compactSummary?: string
 }
 
 /** 上下文修剪结果负载 (Context Pruned Payload) */

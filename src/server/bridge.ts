@@ -10,18 +10,21 @@ import type {
 } from '../types/telemetry'
 import { GateManager } from '../services/gateManager'
 import { AssertionEngine, assertionEngine as defaultAssertionEngine } from '../services/assertionEngine'
+import { MicroCompactor, microCompactor as defaultMicroCompactor } from '../services/microCompactor'
 
 export interface BridgeServerOptions {
   port?: number
   host?: string
   gateManager?: GateManager
   assertionEngine?: AssertionEngine
+  microCompactor?: MicroCompactor
 }
 
 export interface BridgeAppInstance {
   app: Hono
   gateManager: GateManager
   assertionEngine: AssertionEngine
+  microCompactor: MicroCompactor
   nodeWs: NodeWebSocket
   broadcast: (data: TelemetryEvent | Record<string, unknown>) => number
 }
@@ -39,9 +42,11 @@ export interface RunningBridgeServer extends BridgeAppInstance {
 export function createBridgeApp(options: {
   gateManager?: GateManager
   assertionEngine?: AssertionEngine
+  microCompactor?: MicroCompactor
 } = {}): BridgeAppInstance {
   const gateManager = options.gateManager || new GateManager()
   const assertionEngine = options.assertionEngine || defaultAssertionEngine
+  const microCompactor = options.microCompactor || defaultMicroCompactor
   const app = new Hono()
 
   // 跨域支持 (允许 Vite Web UI 与外部本地 Agent 进程直连)
@@ -121,12 +126,28 @@ export function createBridgeApp(options: {
         finalStatus = 'failed'
       }
 
+      // 微压缩引擎介入 (MicroCompactor Engine: Rule 1 & Rule 3)
+      let observation = event.observation
+      let pointerId = observation?.pointerId
+      let compactSummary = observation?.compactSummary
+
+      if (observation && observation.output && observation.output.length > 0) {
+        const compactedObs = microCompactor.compactObservation(observation, {
+          toolName: event.gesture,
+          nodeId: event.nodeId,
+        })
+        observation = compactedObs
+        pointerId = compactedObs.pointerId
+        compactSummary = compactedObs.compactSummary
+      }
+
       const normalizedEvent: TelemetryEvent = {
         ...event,
         type: eventType,
         status: finalStatus || event.status,
         isCorrectionBranch,
         assertion,
+        observation,
         gatePayload,
         timestamp: event.timestamp || Date.now(),
       }
@@ -137,6 +158,8 @@ export function createBridgeApp(options: {
         deliveredClients: delivered,
         nodeId: normalizedEvent.nodeId,
         assertion,
+        pointerId,
+        compactSummary,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to parse telemetry body'
@@ -281,7 +304,39 @@ export function createBridgeApp(options: {
     })
   })
 
-  // 6. WebSocket 流式全双工端点 (/ws)
+  // 6. Write-Ahead Log (WAL) 离线日志全局统计与条目清单 (GET /api/wal)
+  app.get('/api/wal', (c) => {
+    return c.json({
+      ok: true,
+      stats: microCompactor.getWalStats(),
+      entries: microCompactor.getAllWal(),
+    })
+  })
+
+  // 7. Write-Ahead Log (WAL) 单个指针记录检视 (GET /api/wal/:pointerId)
+  app.get('/api/wal/:pointerId', (c) => {
+    const pointerId = c.req.param('pointerId')
+    const entry = microCompactor.getWal(pointerId)
+    if (!entry) {
+      return c.json({ ok: false, error: `WAL entry "${pointerId}" not found` }, 404)
+    }
+    return c.json({
+      ok: true,
+      entry,
+    })
+  })
+
+  // 8. Write-Ahead Log (WAL) 原始未压缩输出回放 (GET /api/wal/:pointerId/replay)
+  app.get('/api/wal/:pointerId/replay', (c) => {
+    const pointerId = c.req.param('pointerId')
+    const raw = microCompactor.replay(pointerId)
+    if (raw === undefined) {
+      return c.json({ ok: false, error: `WAL entry "${pointerId}" not found` }, 404)
+    }
+    return c.text(raw)
+  })
+
+  // 9. WebSocket 流式全双工端点 (/ws)
   app.get(
     '/ws',
     upgradeWebSocket(() => {
@@ -327,6 +382,13 @@ export function createBridgeApp(options: {
               return
             }
 
+            // 支持通过 WebSocket 查询 WAL 离线日志记录
+            if (data.type === 'get_wal' && data.pointerId) {
+              const entry = microCompactor.getWal(data.pointerId)
+              ws.send(JSON.stringify({ type: 'wal_entry', pointerId: data.pointerId, entry: entry || null }))
+              return
+            }
+
             // 支持通过 WebSocket 转发遥测事件
             if (data.type === 'telemetry' && data.event) {
               broadcast(data.event)
@@ -343,6 +405,7 @@ export function createBridgeApp(options: {
     app,
     gateManager,
     assertionEngine,
+    microCompactor,
     nodeWs,
     broadcast,
   }
@@ -357,6 +420,7 @@ export function startBridgeServer(options: BridgeServerOptions = {}): Promise<Ru
   const appInstance = createBridgeApp({
     gateManager: options.gateManager,
     assertionEngine: options.assertionEngine,
+    microCompactor: options.microCompactor,
   })
 
   return new Promise((resolve) => {

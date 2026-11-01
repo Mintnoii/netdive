@@ -20,6 +20,8 @@ import { BASE_CONTEXT_WATERMARK, formatTokens } from '../types/telemetry'
 import { gateManager } from '../services/gateManager'
 import { assertionEngine } from '../services/assertionEngine'
 export { assertionEngine } from '../services/assertionEngine'
+export { microCompactor, MicroCompactor } from '../services/microCompactor'
+import { microCompactor } from '../services/microCompactor'
 import {
   useBridgeConnection,
 } from './useBridgeConnection'
@@ -1318,5 +1320,6 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     resetWatermark,
     prunableItems,
     assertionEngine,
+    microCompactor,
   }
 }
