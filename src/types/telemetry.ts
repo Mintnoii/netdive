@@ -188,10 +188,87 @@ export type TelemetryEventType =
 
 /** 单测或工具调用执行观测结果 */
 export interface TelemetryObservation {
-  exitCode: number
-  output: string[]
+  exitCode?: number
+  output?: string[] | string
   pointerId?: string
   compactSummary?: string
+  command?: string
+  [key: string]: unknown
+}
+
+/**
+ * 安全规约任何形状的工具执行输出为 string[]
+ * 彻底消除 output.some / output.map / output.join 不是函数的白屏隐患
+ */
+export function normalizeObservationOutput(output: unknown): string[] {
+  if (Array.isArray(output)) {
+    return output.flatMap((item) => {
+      if (typeof item === 'string') {
+        return item.includes('\n') ? item.split(/\r?\n/) : [item]
+      }
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>
+        if (typeof obj.text === 'string') {
+          return obj.text.includes('\n') ? obj.text.split(/\r?\n/) : [obj.text]
+        }
+        if (typeof obj.content === 'string') {
+          return obj.content.includes('\n') ? obj.content.split(/\r?\n/) : [obj.content]
+        }
+        if (typeof obj.message === 'string') {
+          return [obj.message]
+        }
+        return [JSON.stringify(item)]
+      }
+      if (item !== undefined && item !== null) {
+        return [String(item)]
+      }
+      return []
+    })
+  }
+  if (typeof output === 'string') {
+    return output.split(/\r?\n/)
+  }
+  if (output && typeof output === 'object') {
+    const obj = output as Record<string, unknown>
+    if (typeof obj.text === 'string') {
+      return obj.text.includes('\n') ? obj.text.split(/\r?\n/) : [obj.text]
+    }
+    if (typeof obj.content === 'string') {
+      return obj.content.includes('\n') ? obj.content.split(/\r?\n/) : [obj.content]
+    }
+    return [JSON.stringify(output)]
+  }
+  if (output !== undefined && output !== null) {
+    return [String(output)]
+  }
+  return []
+}
+
+/**
+ * 规范化 TelemetryObservation 对象，确保 output 100% 规约为 string[]
+ */
+export function normalizeTelemetryObservation(
+  observation: unknown
+): (TelemetryObservation & { output: string[] }) | undefined {
+  if (!observation || typeof observation !== 'object') {
+    return undefined
+  }
+  const obs = observation as Record<string, unknown>
+  const exitCode =
+    typeof obs.exitCode === 'number'
+      ? obs.exitCode
+      : typeof obs.exitCode === 'string' && !isNaN(Number(obs.exitCode))
+        ? Number(obs.exitCode)
+        : undefined
+
+  return {
+    ...obs,
+    exitCode,
+    output: normalizeObservationOutput(obs.output),
+    pointerId: typeof obs.pointerId === 'string' ? obs.pointerId : undefined,
+    compactSummary: typeof obs.compactSummary === 'string' ? obs.compactSummary : undefined,
+    command: typeof obs.command === 'string' ? obs.command : undefined,
+  }
 }
 
 /** 上下文修剪结果负载 (Context Pruned Payload) */
@@ -200,6 +277,36 @@ export interface ContextPrunedPayload {
   after: ContextWatermark
   reclaimedTokens: number
   prunedNodeIds?: string[]
+}
+
+/**
+ * 安全格式化节点摘要文本，彻底消灭 [object Object] 坏味道
+ */
+export function formatNodeSummary(summary: unknown): string {
+  if (summary === null || summary === undefined) return ''
+  if (typeof summary === 'string') return summary
+  if (typeof summary === 'number' || typeof summary === 'boolean') return String(summary)
+
+  if (Array.isArray(summary)) {
+    return summary
+      .map((item) => formatNodeSummary(item))
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  if (typeof summary === 'object') {
+    const obj = summary as Record<string, unknown>
+    if (typeof obj.text === 'string') return obj.text
+    if (typeof obj.summary === 'string') return obj.summary
+    if (typeof obj.plan === 'string') return obj.plan
+    if (typeof obj.content === 'string') return obj.content
+    if (typeof obj.message === 'string') return obj.message
+    if (typeof obj.command === 'string') return `$ ${obj.command}`
+    if (typeof obj.path === 'string') return `文件: ${obj.path}`
+    return JSON.stringify(summary, null, 2)
+  }
+
+  return String(summary)
 }
 
 /** 核心流式遥测事件契约 (TelemetryEvent) */
@@ -228,4 +335,7 @@ export interface TelemetryEvent {
   reclaimedTokens?: number
   prunedNodeIds?: string[]
   contextPruned?: ContextPrunedPayload
+  isAggregated?: boolean
+  aggregateCount?: number
+  aggregatedEvents?: TelemetryEvent[]
 }

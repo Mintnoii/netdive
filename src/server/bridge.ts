@@ -7,6 +7,10 @@ import type {
   GateDecision,
   GatePromptPayload,
   TelemetryEvent,
+  TelemetryObservation,
+} from '../types/telemetry'
+import {
+  normalizeTelemetryObservation,
 } from '../types/telemetry'
 import { GateManager } from '../services/gateManager'
 import { AssertionEngine, assertionEngine as defaultAssertionEngine } from '../services/assertionEngine'
@@ -85,10 +89,17 @@ export function createBridgeApp(options: {
   app.post('/api/telemetry', async (c) => {
     try {
       const body = await c.req.json<TelemetryEvent | { event: TelemetryEvent }>()
-      const event: TelemetryEvent = 'event' in body && body.event ? body.event : (body as TelemetryEvent)
+      const rawEvent: TelemetryEvent = 'event' in body && body.event ? body.event : (body as TelemetryEvent)
 
-      if (!event.type || !event.nodeId) {
+      if (!rawEvent || !rawEvent.type || !rawEvent.nodeId) {
         return c.json({ ok: false, error: 'Invalid telemetry event: nodeId and type are required' }, 400)
+      }
+
+      // 强契约规范化 TelemetryObservation
+      const normalizedObs = normalizeTelemetryObservation(rawEvent.observation)
+      const event: TelemetryEvent = {
+        ...rawEvent,
+        observation: normalizedObs,
       }
 
       // L1 确定性断言引擎判定 (L1 Deterministic Assertion)
@@ -127,7 +138,7 @@ export function createBridgeApp(options: {
       }
 
       // 微压缩引擎介入 (MicroCompactor Engine: Rule 1 & Rule 3)
-      let observation = event.observation
+      let observation = normalizedObs
       let pointerId = observation?.pointerId
       let compactSummary = observation?.compactSummary
 
@@ -187,19 +198,43 @@ export function createBridgeApp(options: {
             parentId?: string
             actor?: TelemetryEvent['actor']
             timestamp?: string
+            observation?: TelemetryObservation
+            isCorrectionBranch?: boolean
           }
       >()
 
       // 强契约解析门禁挂起载荷
       const rawPayload = 'gatePayload' in body && body.gatePayload ? body.gatePayload : body
-      const gateId = rawPayload.gateId || `gate-${Date.now()}`
-      const title = rawPayload.title || '决策门禁待审 (HITL)'
-      const riskLevel = rawPayload.riskLevel || 'high'
+      const gateId =
+        rawPayload.gateId ||
+        ('gateId' in body && typeof body.gateId === 'string' ? body.gateId : undefined) ||
+        `gate-${Date.now()}`
 
-      const proposedAction = rawPayload.proposedAction || {
-        command: ('command' in body && typeof body.command === 'string' ? body.command : '') || '',
-        diff: 'diff' in body && typeof body.diff === 'string' ? body.diff : undefined,
+      const title =
+        rawPayload.title ||
+        ('title' in body && typeof body.title === 'string' ? body.title : undefined) ||
+        '决策门禁待审 (HITL)'
+
+      const riskLevel =
+        rawPayload.riskLevel ||
+        ('riskLevel' in body && (body.riskLevel === 'high' || body.riskLevel === 'critical') ? body.riskLevel : undefined) ||
+        'high'
+
+      const rawAction =
+        ('proposedAction' in rawPayload && rawPayload.proposedAction) ||
+        ('proposedAction' in body && body.proposedAction) ||
+        undefined
+
+      const proposedAction = {
+        command:
+          (rawAction && typeof rawAction.command === 'string' ? rawAction.command : '') ||
+          ('command' in body && typeof body.command === 'string' ? body.command : '') ||
+          '',
+        diff:
+          (rawAction && typeof rawAction.diff === 'string' ? rawAction.diff : undefined) ||
+          ('diff' in body && typeof body.diff === 'string' ? body.diff : undefined),
         explanation:
+          (rawAction && typeof rawAction.explanation === 'string' ? rawAction.explanation : '') ||
           ('explanation' in body && typeof body.explanation === 'string' ? body.explanation : '') ||
           'Agent 请求执行敏感动作，需人类操作员确认授权。',
       }
@@ -207,7 +242,11 @@ export function createBridgeApp(options: {
       const timestamp =
         ('timestamp' in rawPayload && typeof rawPayload.timestamp === 'string'
           ? rawPayload.timestamp
-          : undefined) || new Date().toISOString()
+          : undefined) ||
+        ('timestamp' in body && typeof body.timestamp === 'string'
+          ? body.timestamp
+          : undefined) ||
+        new Date().toISOString()
 
       const gatePayload: GatePromptPayload = {
         gateId,
@@ -220,17 +259,24 @@ export function createBridgeApp(options: {
       // 注册到门禁协程挂起队列
       const decisionPromise = gateManager.registerGate(gatePayload)
 
+      const nodeId = ('nodeId' in body && typeof body.nodeId === 'string' && body.nodeId) || gateId
+      const parentId = 'parentId' in body && typeof body.parentId === 'string' ? body.parentId : undefined
+      const isCorrectionBranch = 'isCorrectionBranch' in body ? Boolean(body.isCorrectionBranch) : false
+      const observation = normalizeTelemetryObservation('observation' in body ? body.observation : undefined)
+
       // 广播 gate_prompt 遥测事件给前端画布，触发挂起与居中审批模态窗
       const promptEvent: TelemetryEvent = {
-        traceId: ('traceId' in body && body.traceId) || `trace-${gateId}`,
-        nodeId: ('nodeId' in body && body.nodeId) || gateId,
-        parentId: 'parentId' in body ? body.parentId : undefined,
+        traceId: ('traceId' in body && typeof body.traceId === 'string' && body.traceId) || `trace-${gateId}`,
+        nodeId,
+        parentId,
         type: 'gate_prompt',
         gesture: 'gate',
         actor: ('actor' in body && body.actor) || 'Human Operator',
         title: gatePayload.title,
         status: 'gate',
         gatePayload,
+        isCorrectionBranch,
+        observation,
         timestamp: Date.now(),
       }
       broadcast(promptEvent)

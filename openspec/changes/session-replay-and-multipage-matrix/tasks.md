@@ -1,0 +1,22 @@
+# Tasks: session-replay-and-multipage-matrix
+
+- [x] Task 1: Transcript 规范化解析器 (`src/services/transcriptParser.ts`)
+  - [x] 解析 Pi Agent / Claude Code JSONL 会话流
+  - [x] 提取 session/thought/toolCall/toolResult 生成因果拓扑
+  - [x] 实现 formatNodeSummary 彻底消除 [object Object]
+- [x] Task 2: 连续工具调用智能聚合折叠 (`aggregateConsecutiveToolEvents`)
+  - [x] 自动折叠同目标连续调用，带 ×N 胶囊标记
+  - [x] 异常/自愈分支强隔离，绝不误合并
+  - [x] 因果 DAG 链接重写与拓扑计算
+- [x] Task 3: 顶层多页面工作台导航 (`src/components/HeaderNav.tsx`)
+  - [x] 实时控制台 (Live) 与会话时光机 (Replay) 双模态切换
+  - [x] 状态物理隔离，互不污染
+- [x] Task 4: 会话时光机实验室与高精度交互防抖 (`src/pages/SessionReplayPage.tsx`)
+  - [x] 拖拽/点击上传本地 JSONL 秒级加载
+  - [x] Progress Ratio 比率锚点锁定（折叠/倍速切换滑块零抖动）
+  - [x] 固定宽度排版消除 Flex 挤压跳跃
+  - [x] useReactFlow 自动运镜平滑追焦与手动锁定保护
+  - [x] 工具参数与摘要一键复制按钮
+- [x] Task 5: 单元测试与代码质检
+  - [x] 86 项单测全量通过
+  - [x] pnpm build 0 报错，oxlint 0 警告

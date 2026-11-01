@@ -10,6 +10,8 @@ import { AgentNode, type AgentNodeData } from './components/AgentNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
 import { ContextStripBar } from './components/ContextStripBar'
 import { PrunableInspectorDrawer } from './components/PrunableInspectorDrawer'
+import { HeaderNav, type StudioTab } from './components/HeaderNav'
+import { SessionReplayPage } from './pages/SessionReplayPage'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
 
 // 注册自定义节点组件
@@ -17,8 +19,8 @@ const nodeTypes = {
   agentNode: AgentNode,
 }
 
-// 初始默认静态节点（从左到右主干推进预览）
-const initialNodes: Node[] = [
+// 初始默认静态节点（从左到右主干推进预览，供离线沙盒展示）
+const defaultMockNodes: Node[] = [
   {
     id: 'node-1',
     type: 'agentNode',
@@ -70,7 +72,7 @@ const initialNodes: Node[] = [
 ]
 
 // 初始默认连线
-const initialEdges: Edge[] = [
+const defaultMockEdges: Edge[] = [
   {
     id: 'e1-2',
     source: 'node-1',
@@ -110,6 +112,7 @@ export default function App() {
     playStream,
     playSelfCorrectionStream,
     resetStream,
+    clearCanvas,
     bridge,
     watermark,
     isPruned,
@@ -117,14 +120,15 @@ export default function App() {
     pruneContext,
     prunableItems,
   } = useTelemetryStream({
-    initialNodes,
-    initialEdges,
+    initialNodes: defaultMockNodes,
+    initialEdges: defaultMockEdges,
   })
 
+  const [activeTab, setActiveTab] = useState<StudioTab>('live')
   const [isInspectorOpen, setIsInspectorOpen] = useState(false)
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024]">
+    <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024] overflow-hidden">
       {/* 顶部素雅工具条 */}
       <header className="h-12 border-b border-[#E5E0D8] bg-[#FBF9F5] px-5 flex items-center justify-between shrink-0">
         <div className="flex items-center space-x-3">
@@ -132,183 +136,217 @@ export default function App() {
             <span className="w-2.5 h-2.5 rounded-full bg-[#1E2024]"></span>
             <span>NetDive</span>
             <span className="text-[10px] text-[#8F887D] font-mono px-1.5 py-0.5 rounded bg-[#F4F0EA] border border-[#E5E0D8]">
-              Phase 5: Context Token Strip & Pruning
+              Studio
             </span>
           </div>
-          <span className="text-xs text-[#8F887D]">|</span>
-          <span className="text-xs text-[#5E6573]">
-            单向因果主干 · ReAct 自愈分叉 · 决策门禁 (HITL) · 上下文剪枝热力图
-          </span>
 
-          {/* Bridge 状态指示胶囊 */}
-          <div
-            className={`ml-2 px-2.5 py-0.5 text-[11px] font-mono rounded-full border flex items-center space-x-1.5 transition-colors ${
-              bridge.isConnected
-                ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                : 'bg-[#F4F0EA] text-[#8F887D] border-[#E5E0D8]'
-            }`}
-            title={
-              bridge.isConnected
-                ? '已连接至 Local Sidecar Bridge (127.0.0.1:4560)，实时流式拓扑与双向门禁已就绪'
-                : '当前处于独立/Mock模式，启动 pnpm server 即可自动连接至 Local Bridge'
-            }
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                bridge.isConnected
-                  ? 'bg-emerald-500 animate-pulse'
-                  : 'bg-[#B5AFA4]'
-              }`}
-            />
-            <span>
-              {bridge.isConnected
-                ? 'Bridge: Connected (127.0.0.1:4560)'
-                : 'Bridge: Standalone / Mock'}
-            </span>
-          </div>
+          <HeaderNav
+            activeTab={activeTab}
+            onChangeTab={setActiveTab}
+            bridgeConnected={bridge.isConnected}
+          />
+
+          {activeTab === 'live' && (
+            <>
+              <span className="text-xs text-[#8F887D]">|</span>
+              <span className="text-xs text-[#5E6573] hidden lg:inline">
+                单向因果主干 · ReAct 自愈分叉 · 决策门禁 (HITL) · 上下文剪枝热力图
+              </span>
+
+              {/* Bridge 状态指示胶囊 */}
+              <div
+                className={`ml-2 px-2.5 py-0.5 text-[11px] font-mono rounded-full border flex items-center space-x-1.5 transition-colors ${
+                  bridge.isConnected
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                    : 'bg-[#F4F0EA] text-[#6E685E] border-[#E5E0D8]'
+                }`}
+                title={
+                  bridge.isConnected
+                    ? '已连接至 Local Sidecar Bridge (127.0.0.1:4560)，实时工作流遥测与双向门禁已就绪'
+                    : '当前运行于离线演示沙盒 (Demo Sandbox)，无需本地服务即可完整交互体验；启动本地 pnpm server 即可自动升级为实时控制台'
+                }
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    bridge.isConnected
+                      ? 'bg-emerald-500 animate-pulse'
+                      : 'bg-amber-500/80'
+                  }`}
+                />
+                <span className="font-sans font-medium text-[11px]">
+                  {bridge.isConnected
+                    ? '工作流在线 (Live Bridge)'
+                    : '演示沙盒 (Demo Sandbox)'}
+                </span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* 右侧动作控制区 */}
-        <div className="flex items-center space-x-2.5">
-          <div className="text-xs font-mono text-[#8F887D] mr-2">
-            节点数: <span className="text-[#1E2024] font-semibold">{nodes.length}</span> / 边数: <span className="text-[#1E2024] font-semibold">{edges.length}</span>
-          </div>
+        {activeTab === 'live' ? (
+          <div className="flex items-center space-x-2.5">
+            <div className="text-xs font-mono text-[#8F887D] mr-2">
+              节点数: <span className="text-[#1E2024] font-semibold">{nodes.length}</span> / 边数: <span className="text-[#1E2024] font-semibold">{edges.length}</span>
+            </div>
 
-          {/* 触发决策门禁 (HITL) 独立测试按钮 */}
-          <button
-            onClick={() => triggerHitlGate()}
-            disabled={currentPendingGate !== null}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
-              currentPendingGate !== null
-                ? 'bg-amber-100 text-amber-900 border-amber-300 cursor-not-allowed'
-                : 'bg-white text-[#1E2024] border-[#E5E0D8] hover:border-[#1E2024] hover:bg-[#F4F0EA]'
-            }`}
-            title="手动触发决策门禁挂起并唤起审批模态窗"
-          >
-            <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
-            <span>触发决策门禁 (HITL)</span>
-          </button>
+            {/* 触发决策门禁 (HITL) 独立测试按钮 */}
+            <button
+              onClick={() => triggerHitlGate()}
+              disabled={currentPendingGate !== null}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
+                currentPendingGate !== null
+                  ? 'bg-amber-100 text-amber-900 border-amber-300 cursor-not-allowed'
+                  : 'bg-white text-[#1E2024] border-[#E5E0D8] hover:border-[#1E2024] hover:bg-[#F4F0EA]'
+              }`}
+              title="手动触发决策门禁挂起并唤起审批模态窗"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+              <span>触发决策门禁 (HITL)</span>
+            </button>
 
-          {/* 播放 / 暂停 / 继续流式事件 */}
-          <button
-            onClick={() => {
-              if (!isPlaying) {
-                playStream()
-              } else if (isPaused) {
-                resumeStream()
-              } else {
-                pauseStream()
+            {/* 播放 / 暂停 / 继续流式事件 */}
+            <button
+              onClick={() => {
+                if (!isPlaying) {
+                  playStream()
+                } else if (isPaused) {
+                  resumeStream()
+                } else {
+                  pauseStream()
+                }
+              }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
+                !isPlaying
+                  ? 'bg-[#1E2024] text-[#FBF9F5] border-[#1E2024] hover:bg-[#34383F]'
+                  : isPaused
+                    ? 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100 hover:border-emerald-400 shadow-2xs'
+                    : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 hover:border-amber-400'
+              }`}
+              title={
+                !isPlaying
+                  ? '播放端到端流式遥测因果主干'
+                  : isPaused
+                    ? '继续执行已暂停的流式事件'
+                    : '暂停流式事件执行'
               }
-            }}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
-              !isPlaying
-                ? 'bg-[#1E2024] text-[#FBF9F5] border-[#1E2024] hover:bg-[#34383F]'
-                : isPaused
-                  ? 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100 hover:border-emerald-400 shadow-2xs'
-                  : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 hover:border-amber-400'
-            }`}
-            title={
-              !isPlaying
-                ? '播放端到端流式遥测因果主干'
-                : isPaused
-                  ? '继续执行已暂停的流式事件'
-                  : '暂停流式事件执行'
-            }
-          >
-            {!isPlaying ? (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>播放流式事件</span>
-              </>
-            ) : isPaused ? (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current text-emerald-700" />
-                <span>继续执行 (Resume)</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse ml-0.5" />
-              </>
-            ) : (
-              <>
-                <Pause className="w-3.5 h-3.5 fill-current text-amber-700" />
-                <span>暂停流式 (Pause)</span>
-              </>
-            )}
-          </button>
+            >
+              {!isPlaying ? (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>播放流式事件</span>
+                </>
+              ) : isPaused ? (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current text-emerald-700" />
+                  <span>继续执行 (Resume)</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse ml-0.5" />
+                </>
+              ) : (
+                <>
+                  <Pause className="w-3.5 h-3.5 fill-current text-amber-700" />
+                  <span>暂停流式 (Pause)</span>
+                </>
+              )}
+            </button>
 
-          {/* 注入自愈分叉剧本 */}
-          <button
-            onClick={() => playSelfCorrectionStream()}
-            disabled={isPlaying}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
-              isPlaying
-                ? 'bg-[#E5E0D8] text-[#8F887D] border-[#D6D0C5] cursor-not-allowed'
-                : 'bg-[#FCFAF6] text-amber-900 border-amber-300/80 hover:bg-amber-100/70 hover:border-amber-400'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-amber-700" />
-            <span>注入单测异常与自愈</span>
-          </button>
+            {/* 注入自愈分叉剧本 */}
+            <button
+              onClick={() => playSelfCorrectionStream()}
+              disabled={isPlaying}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
+                isPlaying
+                  ? 'bg-[#E5E0D8] text-[#8F887D] border-[#D6D0C5] cursor-not-allowed'
+                  : 'bg-[#FCFAF6] text-amber-900 border-amber-300/80 hover:bg-amber-100/70 hover:border-amber-400'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-700" />
+              <span>注入单测异常与自愈</span>
+            </button>
 
-          {/* 重置 */}
-          <button
-            onClick={resetStream}
-            className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#E5E0D8] bg-white text-[#5E6573] hover:text-[#1E2024] hover:border-[#B5AFA4] flex items-center space-x-1 transition-colors cursor-pointer"
-            title="重置画布为初始状态"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>重置</span>
-          </button>
-        </div>
+            {/* 重置 */}
+            <button
+              onClick={resetStream}
+              className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#E5E0D8] bg-white text-[#5E6573] hover:text-[#1E2024] hover:border-[#B5AFA4] flex items-center space-x-1 transition-colors cursor-pointer"
+              title="重置画布为初始状态"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>重置</span>
+            </button>
+
+            {/* 清空画布 */}
+            <button
+              onClick={clearCanvas}
+              className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#E5E0D8] bg-white text-[#8F887D] hover:text-[#DC2626] hover:border-[#FCA5A5] flex items-center space-x-1 transition-colors cursor-pointer"
+              title="清空当前画布所有节点，准备接收纯净的外部 Agent 实时流"
+            >
+              <span>清空</span>
+            </button>
+          </div>
+        ) : (
+          <div className="text-xs text-[#8F887D] font-mono hidden md:block">
+            离线会话解析 · 0% 侵入式嗅探 · 因果拓扑时光回溯
+          </div>
+        )}
       </header>
 
-      {/* 上下文注意力与剪枝分布条 (Context Token Strip & Pruning) */}
-      <ContextStripBar
-        watermark={watermark}
-        isPruned={isPruned}
-        reclaimedTokens={reclaimedTokens}
-        onPrune={pruneContext}
-        prunableItems={prunableItems}
-        isInspectorOpen={isInspectorOpen}
-        onInspect={() => setIsInspectorOpen((open) => !open)}
-      />
-
-      {/* 主体画布与侧边栏抽屉协同 Push 布局 */}
-      <main className="flex-1 flex w-full min-h-0 overflow-hidden relative">
-        {/* Left flex-1: The ReactFlow canvas (which smoothly shrinks when drawer opens) */}
-        <div className="flex-1 h-full relative paper-pattern min-w-0 transition-all duration-300">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            fitView
-            fitViewOptions={{ padding: 0.2 }}
-            minZoom={0.2}
-            maxZoom={1.5}
-          >
-            <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
-          </ReactFlow>
-        </div>
-
-        {/* Right shrink-0: The PrunableInspectorDrawer panel docked seamlessly on the right */}
-        {isInspectorOpen && (
-          <PrunableInspectorDrawer
-            isOpen={isInspectorOpen}
-            onClose={() => setIsInspectorOpen(false)}
+      {/* 视图内容区：状态隔离且不丢失 Live 状态 */}
+      {activeTab === 'live' ? (
+        <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
+          {/* 上下文注意力与剪枝分布条 (Context Token Strip & Pruning) */}
+          <ContextStripBar
+            watermark={watermark}
             isPruned={isPruned}
             reclaimedTokens={reclaimedTokens}
             onPrune={pruneContext}
-            items={prunableItems}
-            watermark={watermark}
+            prunableItems={prunableItems}
+            isInspectorOpen={isInspectorOpen}
+            onInspect={() => setIsInspectorOpen((open) => !open)}
           />
-        )}
-      </main>
 
-      {/* 人类在环决策门禁审批模态窗 */}
-      <GateApprovalModal
-        payload={currentPendingGate}
-        onResolve={resolveCurrentGate}
-      />
+          {/* 主体画布与侧边栏抽屉协同 Push 布局 */}
+          <main className="flex-1 flex w-full min-h-0 overflow-hidden relative">
+            <div className="flex-1 h-full relative paper-pattern min-w-0 transition-all duration-300">
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={nodeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                fitView
+                fitViewOptions={{ padding: 0.2 }}
+                minZoom={0.2}
+                maxZoom={1.5}
+              >
+                <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
+              </ReactFlow>
+            </div>
+
+            {/* 侧边栏抽屉 */}
+            {isInspectorOpen && (
+              <PrunableInspectorDrawer
+                isOpen={isInspectorOpen}
+                onClose={() => setIsInspectorOpen(false)}
+                isPruned={isPruned}
+                reclaimedTokens={reclaimedTokens}
+                onPrune={pruneContext}
+                items={prunableItems}
+                watermark={watermark}
+              />
+            )}
+          </main>
+
+          {/* 人类在环决策门禁审批模态窗 */}
+          <GateApprovalModal
+            payload={currentPendingGate}
+            onResolve={resolveCurrentGate}
+          />
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
+          <SessionReplayPage />
+        </div>
+      )}
     </div>
   )
 }

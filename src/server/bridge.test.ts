@@ -368,6 +368,70 @@ describe('NetDive Hono Bridge Server & Gate HITL Integration', () => {
     )
     assert.ok(foundResonanceGate)
   })
+
+  it('Bridge Server POST /api/telemetry normalizes string observation.output to string[]', async () => {
+    const res = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/telemetry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nodeId: `node-str-test-${Date.now()}`,
+        traceId: 'trace-str-test',
+        type: 'node_complete',
+        gesture: 'bash',
+        title: 'String Output Test',
+        observation: {
+          exitCode: 0,
+          output: 'Line 1\nLine 2\nLine 3',
+        },
+      }),
+    })
+    assert.equal(res.status, 200)
+    const data = await res.json()
+    assert.equal(data.ok, true)
+  })
+
+  it('Bridge Server POST /api/gate/prompt accepts omitted node_start and mounts correctly', async () => {
+    const gateId = `gate-direct-${Date.now()}`
+    const promptPromise = fetch(`http://${TEST_HOST}:${TEST_PORT}/api/gate/prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nodeId: 'direct-gate-node',
+        parentId: 'prev-node',
+        gateId,
+        title: 'Direct Gate Without Node Start',
+        riskLevel: 'critical',
+        proposedAction: {
+          command: 'git commit -m "feat: direct"',
+          explanation: 'Direct gate test',
+        },
+      }),
+    })
+
+    await new Promise((r) => setTimeout(r, 80))
+
+    // Check pending gates
+    const pendingRes = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/gate/pending`)
+    const pendingData = await pendingRes.json()
+    const found = pendingData.pendingGates.find((g: { gateId: string }) => g.gateId === gateId)
+    assert.ok(found)
+
+    // Resolve gate
+    const resolveRes = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/gate/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        gateId,
+        decision: { action: 'approve' },
+      }),
+    })
+    assert.equal(resolveRes.status, 200)
+
+    const promptRes = await promptPromise
+    assert.equal(promptRes.status, 200)
+    const promptData = await promptRes.json()
+    assert.equal(promptData.action, 'approve')
+  })
 })
 
 describe('Context Watermark & Token Utilities', () => {
@@ -751,6 +815,133 @@ describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
     assert.ok(hookEngine)
     assert.equal(typeof hookEngine.evaluate, 'function')
     assert.equal(typeof hookEngine.reset, 'function')
+  })
+})
+
+describe('Telemetry Event Normalization & Contract Robustness', () => {
+  it('normalizeObservationOutput safely converts varied outputs to string[]', async () => {
+    const { normalizeObservationOutput } = await import('../types/telemetry')
+
+    // 1. String with newlines splits into array
+    assert.deepEqual(normalizeObservationOutput('line 1\nline 2\r\nline 3'), [
+      'line 1',
+      'line 2',
+      'line 3',
+    ])
+
+    // 2. Single string becomes 1-element array
+    assert.deepEqual(normalizeObservationOutput('single line'), ['single line'])
+
+    // 3. String[] remains string[]
+    assert.deepEqual(normalizeObservationOutput(['a', 'b']), ['a', 'b'])
+
+    // 4. Array with embedded newlines splits cleanly
+    assert.deepEqual(normalizeObservationOutput(['line 1\nline 2', 'line 3']), [
+      'line 1',
+      'line 2',
+      'line 3',
+    ])
+
+    // 5. Null, undefined, empty string handled safely
+    assert.deepEqual(normalizeObservationOutput(null), [])
+    assert.deepEqual(normalizeObservationOutput(undefined), [])
+    assert.deepEqual(normalizeObservationOutput(''), [''])
+
+    // 6. Number and boolean converted safely
+    assert.deepEqual(normalizeObservationOutput(42), ['42'])
+    assert.deepEqual(normalizeObservationOutput(true), ['true'])
+  })
+
+  it('normalizeTelemetryObservation safely normalizes observation objects', async () => {
+    const { normalizeTelemetryObservation } = await import('../types/telemetry')
+
+    // 1. Observation with string output gets converted to string[]
+    const obs1 = normalizeTelemetryObservation({
+      exitCode: 0,
+      output: 'Tests passed\nAll 156 ok',
+    })
+    assert.ok(obs1)
+    assert.equal(obs1.exitCode, 0)
+    assert.deepEqual(obs1.output, ['Tests passed', 'All 156 ok'])
+
+    // 2. Observation with string exitCode converts to number
+    const obs2 = normalizeTelemetryObservation({
+      exitCode: '1',
+      output: ['fail'],
+    })
+    assert.ok(obs2)
+    assert.equal(obs2.exitCode, 1)
+
+    // 3. Missing observation returns undefined
+    assert.equal(normalizeTelemetryObservation(null), undefined)
+    assert.equal(normalizeTelemetryObservation(undefined), undefined)
+    assert.equal(normalizeTelemetryObservation('invalid'), undefined)
+  })
+
+  it('getDynamicWatermarkDelta handles null/undefined and malformed inputs gracefully', async () => {
+    const { getDynamicWatermarkDelta } = await import('../hooks/useTelemetryStream')
+
+    // 1. Null/undefined returns safe default
+    assert.deepEqual(getDynamicWatermarkDelta(null), { activeTurns: 2000, prunableTools: 0 })
+    assert.deepEqual(getDynamicWatermarkDelta(undefined), { activeTurns: 2000, prunableTools: 0 })
+
+    // 2. Bash with string output correctly detects heavy output
+    const delta1 = getDynamicWatermarkDelta({
+      gesture: 'bash',
+      observation: { exitCode: 0, output: '156 tests passed' },
+    })
+    assert.deepEqual(delta1, { activeTurns: 3000, prunableTools: 16000 })
+
+    // 3. Bash with empty string or empty array gives base tools delta
+    const delta2 = getDynamicWatermarkDelta({
+      gesture: 'bash',
+      observation: { exitCode: 0, output: [] },
+    })
+    assert.deepEqual(delta2, { activeTurns: 3000, prunableTools: 12000 })
+  })
+
+  it('extractPrunableItems does not crash on nodes with string output or missing fields', async () => {
+    const { extractPrunableItems } = await import('../hooks/useTelemetryStream')
+
+    // 1. Node with observation.output as a single string
+    const stringObsNode: any = {
+      id: 'node-str-obs',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: 'Bash 执行',
+        gesture: 'bash',
+        status: 'completed',
+        observation: {
+          exitCode: 0,
+          output: 'M package.json\nM src/App.tsx',
+        },
+      },
+    }
+
+    const items = extractPrunableItems([stringObsNode])
+    assert.equal(items.length, 1)
+    assert.equal(items[0].id, 'node-str-obs')
+    assert.ok(items[0].rawDetail.includes('M package.json'))
+    assert.ok(items[0].rawPayloadPreview?.includes('M package.json'))
+
+    // 2. Node with observation.output as null/undefined
+    const nullObsNode: any = {
+      id: 'node-null-obs',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: 'Bash 空输出',
+        gesture: 'bash',
+        status: 'completed',
+        observation: {
+          exitCode: 0,
+          output: null,
+        },
+      },
+    }
+    const nullItems = extractPrunableItems([nullObsNode])
+    assert.equal(nullItems.length, 1)
   })
 })
 

@@ -5,6 +5,7 @@ import type {
   TelemetryObservation,
   TelemetryStatus,
 } from '../types/telemetry'
+import { normalizeObservationOutput } from '../types/telemetry'
 
 export type { AssertionResult }
 
@@ -184,11 +185,9 @@ export function computeFailureSignature(context: ToolExecutionContext): string {
         ? context.observation.exitCode
         : -1
 
-  const outputLines = Array.isArray(context.output)
-    ? context.output
-    : typeof context.output === 'string'
-      ? [context.output]
-      : context.observation?.output || []
+  const outputLines = context.output !== undefined
+    ? normalizeObservationOutput(context.output)
+    : normalizeObservationOutput(context.observation?.output)
 
   // 提取首个或关键错误信息行
   const keyError =
@@ -295,11 +294,9 @@ export class AssertionEngine {
         ? context.exitCode
         : context.observation?.exitCode
 
-    const outputLines: string[] = Array.isArray(context.output)
-      ? context.output
-      : typeof context.output === 'string'
-        ? [context.output]
-        : context.observation?.output || []
+    const outputLines: string[] = context.output !== undefined
+      ? normalizeObservationOutput(context.output)
+      : normalizeObservationOutput(context.observation?.output)
 
     // 语法树 AST 异常检测
     const astError = detectAstError(outputLines)

@@ -1,4 +1,5 @@
 import type { TelemetryObservation } from '../types/telemetry'
+import { normalizeObservationOutput } from '../types/telemetry'
 
 /**
  * Write-Ahead Log (WAL) 离线指针记录条目契约
@@ -499,27 +500,42 @@ export class MicroCompactor {
       toolCallId?: string
       nodeId?: string
     } = {}
-  ): TelemetryObservation & { pointerContext?: CompactPointerContext } {
-    if (!observation || !observation.output || observation.output.length === 0) {
-      return observation
+  ): TelemetryObservation & { pointerContext?: CompactPointerContext; output: string[] } {
+    if (!observation) {
+      return { exitCode: 0, output: [] }
     }
 
-    if (!isCompactionNeeded(observation.output, this.options)) {
-      return observation
+    const outputList = normalizeObservationOutput(observation.output)
+    if (outputList.length === 0) {
+      return {
+        ...observation,
+        output: outputList,
+      }
     }
 
-    const result = this.compactToolOutput(observation.output, {
+    if (!isCompactionNeeded(outputList, this.options)) {
+      return {
+        ...observation,
+        output: outputList,
+      }
+    }
+
+    const result = this.compactToolOutput(outputList, {
       toolCallId: context.toolCallId || (context.nodeId ? `call-${context.nodeId}` : undefined),
       toolName: context.toolName,
       exitCode: observation.exitCode,
     })
 
     if (!result.compacted) {
-      return observation
+      return {
+        ...observation,
+        output: outputList,
+      }
     }
 
     return {
-      exitCode: observation.exitCode,
+      ...observation,
+      exitCode: observation.exitCode ?? 0,
       output: result.output.split('\n'),
       pointerId: result.pointerId,
       compactSummary: result.compactSummary,

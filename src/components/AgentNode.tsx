@@ -12,6 +12,7 @@ import {
   Loader2,
   Sparkles,
   Scissors,
+  Layers,
 } from 'lucide-react'
 import type {
   TelemetryActor,
@@ -19,8 +20,9 @@ import type {
   TelemetryObservation,
   TelemetryStatus,
   AssertionResult,
+  TelemetryEvent,
 } from '../types/telemetry'
-import { formatTokens } from '../types/telemetry'
+import { formatTokens, normalizeObservationOutput, formatNodeSummary } from '../types/telemetry'
 
 export interface AgentNodeData {
   title: string
@@ -36,6 +38,10 @@ export interface AgentNodeData {
   pruned?: boolean
   payload?: Record<string, unknown>
   prunableTokens?: number
+  isAggregated?: boolean
+  aggregateCount?: number
+  aggregatedEvents?: TelemetryEvent[]
+  [key: string]: unknown
 }
 
 export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
@@ -85,8 +91,9 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
       return nodeData.prunableTokens
     }
     if (nodeData.gesture === 'bash') {
+      const outputLines = normalizeObservationOutput(nodeData.observation?.output)
       const hasHeavy = Boolean(
-        (nodeData.observation?.output && nodeData.observation.output.length > 0) ||
+        outputLines.length > 0 ||
           (nodeData.summary && /test|passed|failed|回归|单测|156/i.test(nodeData.summary)) ||
           (nodeData.title && /test|测试/i.test(nodeData.title))
       )
@@ -103,8 +110,9 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
 
   const getSnippetPreview = () => {
     if (nodeData.gesture === 'bash') {
-      if (nodeData.observation?.output && nodeData.observation.output.length > 0) {
-        return nodeData.observation.output.slice(0, 2).map((l) => `✓ ${l}`).join('\n')
+      const outputLines = normalizeObservationOutput(nodeData.observation?.output)
+      if (outputLines.length > 0) {
+        return outputLines.slice(0, 2).map((l) => `✓ ${l}`).join('\n')
       }
       return '$ pnpm test:pipeline\n✓ 156 tests passed'
     }
@@ -153,10 +161,15 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
 
   // 状态颜色边框与背景（保持 Paper & Ink 素雅手绘纸本质感，杜绝刺眼多余光晕）
   const getBorderClass = () => {
-    if (selected) return 'border-[#1E2024] ring-2 ring-[#1E2024]/10 shadow-md'
+    if (selected) {
+      if (nodeData.isAggregated) {
+        return 'border-[#1E2024] ring-2 ring-[#1E2024]/10 bg-[#FAF8F5] shadow-[3px_3px_0px_#8F887D,6px_6px_0px_#C8C2B7]'
+      }
+      return 'border-[#1E2024] ring-2 ring-[#1E2024]/10 shadow-md'
+    }
     if (nodeData.status === 'rejected') return 'border-red-400 bg-red-50/50 ring-2 ring-red-400/20 shadow-xs'
     if (nodeData.status === 'failed') return 'border-red-400 bg-red-50/40 shadow-xs'
-    if (nodeData.status === 'gate') return 'border-amber-400 bg-amber-50/40 ring-2 ring-amber-400/20'
+    if (nodeData.status === 'gate') return 'border-amber-400 bg-amber-50/40 ring-2 ring-amber-400/20 shadow-xs'
     if (nodeData.isCorrectionBranch) {
       if (nodeData.status === 'running') {
         return 'border-amber-400 bg-amber-50/30 ring-2 ring-amber-400/20 shadow-xs'
@@ -164,7 +177,10 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
       return 'border-amber-300/80 bg-[#FCFAF6] hover:border-amber-400/90 shadow-xs'
     }
     if (nodeData.status === 'running') return 'border-indigo-400 bg-white ring-2 ring-indigo-400/20 shadow-xs'
-    return 'border-[#E5E0D8] hover:border-[#B5AFA4]'
+    if (nodeData.isAggregated) {
+      return 'border-[#C0B9AC] bg-[#FAF8F5] hover:border-[#8F887D] shadow-[3px_3px_0px_#D5CEC2,6px_6px_0px_#EDE8DF]'
+    }
+    return 'border-[#E5E0D8] hover:border-[#B5AFA4] shadow-xs'
   }
 
   // 当节点已被上下文剪枝折叠时，展示极简信纸折叠卡片 (Compact Folded Card)
@@ -219,7 +235,7 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
     <div
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={`w-[230px] rounded-lg bg-white border p-3 shadow-xs transition-all duration-150 relative ${getBorderClass()}`}
+      className={`w-[230px] rounded-lg bg-white border p-3 transition-all duration-150 relative ${getBorderClass()}`}
     >
       {/* 悬停就地修剪提示气泡 (In-situ Hover Tooltip) */}
       {isPrunable && showTooltip && !nodeData.pruned && (
@@ -272,6 +288,15 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
             <span>自愈</span>
           </span>
         )}
+        {nodeData.isAggregated && (
+          <span
+            className="shrink-0 text-[9px] font-mono font-semibold px-2 py-0.5 rounded-full bg-[#EAE4D9] text-[#3D3831] border border-[#C5BDAF] shadow-2xs flex items-center space-x-1"
+            title={`连续聚合 ${nodeData.aggregateCount || 2} 次同构调用 (已折叠)`}
+          >
+            <Layers className="w-2.5 h-2.5 text-[#5C5549] inline" />
+            <span>x{nodeData.aggregateCount || 2} 聚合</span>
+          </span>
+        )}
       </div>
 
       {/* Observation 观测结果警示：若存在失败显示 exit: 1 提示 */}
@@ -283,9 +308,9 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
           </div>
           <span
             className="text-[9px] text-red-600/90 truncate max-w-[110px]"
-            title={nodeData.observation.output?.[0]}
+            title={normalizeObservationOutput(nodeData.observation.output)[0]}
           >
-            {nodeData.observation.output?.[0] || '断言异常'}
+            {normalizeObservationOutput(nodeData.observation.output)[0] || '断言异常'}
           </span>
         </div>
       )}
@@ -317,7 +342,7 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
 
       {/* 描述与流式打字摘要 */}
       <div className="text-[11px] text-[#5E6573] line-clamp-3 leading-relaxed mb-2 font-mono min-h-[2.5rem] break-words">
-        {nodeData.summary || ''}
+        {formatNodeSummary(nodeData.summary)}
         {nodeData.status === 'running' && (
           <span className="inline-block w-1.5 h-3 ml-0.5 bg-indigo-500 animate-pulse align-middle" />
         )}
@@ -336,7 +361,7 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
           )}
           {nodeData.status === 'completed' && (
             <span className="text-emerald-700 flex items-center">
-              <CheckCircle2 className="w-3 h-3 mr-0.5 inline" /> 完成
+              <CheckCircle2 className="w-3 h-3 mr-0.5 inline" /> {nodeData.isAggregated ? `已聚合 (x${nodeData.aggregateCount || 2})` : '完成'}
             </span>
           )}
           {nodeData.status === 'failed' && (

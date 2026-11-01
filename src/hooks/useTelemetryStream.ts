@@ -16,7 +16,12 @@ import type {
   ContextWatermark,
   PrunableItem,
 } from '../types/telemetry'
-import { BASE_CONTEXT_WATERMARK, formatTokens } from '../types/telemetry'
+import {
+  BASE_CONTEXT_WATERMARK,
+  formatTokens,
+  normalizeObservationOutput,
+  normalizeTelemetryObservation,
+} from '../types/telemetry'
 import { gateManager } from '../services/gateManager'
 import { assertionEngine } from '../services/assertionEngine'
 export { assertionEngine } from '../services/assertionEngine'
@@ -35,13 +40,16 @@ export interface WatermarkDelta {
 /**
  * 依据动作手势与执行观测结果计算单步 Token 水位动态增量
  */
-export function getDynamicWatermarkDelta(item: {
+export function getDynamicWatermarkDelta(item?: {
   gesture?: TelemetryGesture
   observation?: TelemetryObservation
   status?: TelemetryStatus
   isGate?: boolean
   watermarkDelta?: WatermarkDelta
-}): WatermarkDelta {
+} | null): WatermarkDelta {
+  if (!item) {
+    return { activeTurns: 2000, prunableTools: 0 }
+  }
   if (item.watermarkDelta) {
     return item.watermarkDelta
   }
@@ -56,9 +64,8 @@ export function getDynamicWatermarkDelta(item: {
     case 'edit':
       return { activeTurns: 3500, prunableTools: 12000 }
     case 'bash': {
-      const hasHeavyOutput = Boolean(
-        item.observation?.output && item.observation.output.length > 0
-      )
+      const outputLines = normalizeObservationOutput(item.observation?.output)
+      const hasHeavyOutput = outputLines.length > 0
       return {
         activeTurns: 3000,
         prunableTools: hasHeavyOutput ? 16000 : 12000,
@@ -77,9 +84,10 @@ export function getDynamicWatermarkDelta(item: {
  * 未完成（running）或纯 think/gate 节点不会进入修剪明细
  */
 export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
+  if (!Array.isArray(nodes)) return []
   return nodes
     .filter((node) => {
-      const data = node.data as unknown as AgentNodeData | undefined
+      const data = node?.data as unknown as AgentNodeData | undefined
       if (!data || data.status === 'running') return false
 
       const isToolGesture =
@@ -87,10 +95,10 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
         data.gesture === 'edit' ||
         data.gesture === 'read'
 
+      const outputLines = normalizeObservationOutput(data.observation?.output)
       const hasObservation = Boolean(
         data.observation &&
-          (typeof data.observation.exitCode === 'number' ||
-            (data.observation.output && data.observation.output.length > 0))
+          (typeof data.observation.exitCode === 'number' || outputLines.length > 0)
       )
 
       const hasPayloadDiff = Boolean(data.payload?.diff)
@@ -99,6 +107,7 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
     })
     .map((node) => {
       const data = node.data as unknown as AgentNodeData
+      const outputLines = normalizeObservationOutput(data.observation?.output)
 
       let gesture: 'bash' | 'edit' | 'read' = 'bash'
       if (
@@ -125,7 +134,7 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
       let tokens = 0
       if (gesture === 'bash') {
         const hasTestOutput = Boolean(
-          (data.observation?.output && data.observation.output.length > 0) ||
+          outputLines.length > 0 ||
             (data.summary &&
               /test|passed|failed|回归|单测|156/i.test(data.summary)) ||
             (data.title && /test|测试/i.test(data.title))
@@ -168,12 +177,12 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
         const isFailed =
           data.observation?.exitCode !== 0 ||
           data.status === 'failed' ||
-          data.observation?.output?.some((l) => /fail|error|Assertion/i.test(l))
+          outputLines.some((l) => /fail|error|Assertion/i.test(l))
 
         if (isFailed) {
           const errorLines =
-            data.observation?.output && data.observation.output.length > 0
-              ? data.observation.output.map((line) => `✖ ${line}`)
+            outputLines.length > 0
+              ? outputLines.map((line) => `✖ ${line}`)
               : [
                   '✖ AssertionError: Expected 200 OK, got 500',
                   '  at test/pipeline.test.ts:42',
@@ -184,11 +193,11 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
             ...errorLines,
             '  ... (150 lines raw stdout/stderr hidden)',
           ].join('\n')
-        } else if (data.observation?.output && data.observation.output.length > 0) {
+        } else if (outputLines.length > 0) {
           rawPayloadPreview = [
             '$ pnpm test:pipeline',
             '> vitest run pipeline',
-            ...data.observation.output.map((line) => `✓ ${line}`),
+            ...outputLines.map((line) => `✓ ${line}`),
             '  ... (150 lines raw stdout/stderr hidden)',
           ].join('\n')
         } else {
@@ -237,8 +246,8 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
       }
 
       let rawDetail = ''
-      if (data.observation?.output && data.observation.output.length > 0) {
-        const outputPreview = data.observation.output.join(' | ')
+      if (outputLines.length > 0) {
+        const outputPreview = outputLines.join(' | ')
         rawDetail = `${outputPreview} (~${formatTokens(tokens)} tokens)`
       } else if (data.summary) {
         rawDetail = `${data.summary} (~${formatTokens(tokens)} tokens)`
@@ -553,9 +562,13 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
    * 处理单个强类型 TelemetryEvent，动态更新 React Flow 节点与连线
    */
   const processEvent = useCallback((event: TelemetryEvent) => {
+    if (!event || typeof event !== 'object' || !event.type) return
+
     switch (event.type) {
       case 'node_start': {
-        const assertion = event.assertion || assertionEngine.evaluate(event)
+        const normalizedObs = normalizeTelemetryObservation(event.observation)
+        const eventWithNormalized = normalizedObs ? { ...event, observation: normalizedObs } : event
+        const assertion = event.assertion || assertionEngine.evaluate(eventWithNormalized)
         let initialStatus = event.status || 'running'
         if (assertion.triggerGate && initialStatus !== 'rejected') {
           initialStatus = 'gate'
@@ -588,7 +601,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
               status: initialStatus,
               summary: event.delta || '',
               isCorrectionBranch: event.isCorrectionBranch,
-              observation: event.observation,
+              observation: normalizedObs,
               payload: event.payload,
               assertion,
             } satisfies AgentNodeData,
@@ -633,29 +646,91 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       }
 
       case 'node_stream': {
-        setNodes((prevNodes) =>
-          prevNodes.map((node) => {
-            if (node.id !== event.nodeId) return node
-            const currentData = node.data as unknown as AgentNodeData
-            return {
-              ...node,
-              data: {
-                ...currentData,
-                summary: (currentData.summary || '') + (event.delta || ''),
-                status: event.status || currentData.status,
-                observation: event.observation ?? currentData.observation,
-                isCorrectionBranch:
-                  event.isCorrectionBranch ?? currentData.isCorrectionBranch,
-              } satisfies AgentNodeData,
+        const normalizedObs = normalizeTelemetryObservation(event.observation)
+        setNodes((prevNodes) => {
+          const exists = prevNodes.some((n) => n.id === event.nodeId)
+          if (exists) {
+            return prevNodes.map((node) => {
+              if (node.id !== event.nodeId) return node
+              const currentData = node.data as unknown as AgentNodeData
+              return {
+                ...node,
+                data: {
+                  ...currentData,
+                  summary: (currentData.summary || '') + (event.delta || ''),
+                  status: event.status || currentData.status,
+                  observation: normalizedObs ?? currentData.observation,
+                  isCorrectionBranch:
+                    event.isCorrectionBranch ?? currentData.isCorrectionBranch,
+                } satisfies AgentNodeData,
+              }
+            })
+          }
+
+          // 若外部 Agent 直投 node_stream（跳过 node_start），动态自动追加新节点
+          const parentNode = event.parentId
+            ? prevNodes.find((n) => n.id === event.parentId)
+            : undefined
+
+          const posX = parentNode
+            ? parentNode.position.x + 280
+            : 50 + prevNodes.length * 280
+
+          const posY = event.isCorrectionBranch ? 340 : 180
+
+          const newNode: Node = {
+            id: event.nodeId,
+            type: 'agentNode',
+            position: { x: posX, y: posY },
+            data: {
+              title: event.title || '任务节点',
+              actor: event.actor || 'Pi (Coordinator)',
+              gesture: event.gesture || 'think',
+              status: event.status || 'running',
+              summary: event.delta || '',
+              isCorrectionBranch: event.isCorrectionBranch,
+              observation: normalizedObs,
+              payload: event.payload,
+            } satisfies AgentNodeData,
+          }
+
+          const nextNodes = [...prevNodes, newNode]
+          nodesRef.current = nextNodes
+          return nextNodes
+        })
+
+        if (event.parentId) {
+          setEdges((prevEdges) => {
+            const edgeId = `e-${event.parentId}-${event.nodeId}`
+            if (prevEdges.some((e) => e.id === edgeId)) return prevEdges
+
+            const parentNode = nodesRef.current.find((n) => n.id === event.parentId)
+            const isBranchEdge = Boolean(
+              event.isCorrectionBranch || (parentNode?.data as unknown as AgentNodeData)?.isCorrectionBranch
+            )
+            const edgeStyle = isBranchEdge
+              ? { stroke: '#D97706', strokeWidth: 1.5, strokeDasharray: '5 4' }
+              : { stroke: '#8F887D', strokeWidth: 1.5 }
+
+            const newEdge: Edge = {
+              id: edgeId,
+              source: event.parentId!,
+              target: event.nodeId,
+              type: 'smoothstep',
+              animated: true,
+              style: edgeStyle,
             }
+            return [...prevEdges, newEdge]
           })
-        )
+        }
         break
       }
 
       case 'node_complete': {
         // Tool execution observations are asserted through assertionEngine before deciding node status and topology branching
-        const assertion = event.assertion || assertionEngine.evaluate(event)
+        const normalizedObs = normalizeTelemetryObservation(event.observation)
+        const eventWithNormalized = normalizedObs ? { ...event, observation: normalizedObs } : event
+        const assertion = event.assertion || assertionEngine.evaluate(eventWithNormalized)
 
         let targetStatus: TelemetryStatus = event.status || 'completed'
         if (assertion.triggerGate && targetStatus !== 'rejected') {
@@ -664,44 +739,118 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
           targetStatus = 'failed'
         }
 
-        setNodes((prevNodes) =>
-          prevNodes.map((node) => {
-            if (node.id !== event.nodeId) return node
-            const currentData = node.data as unknown as AgentNodeData
-            return {
-              ...node,
-              data: {
-                ...currentData,
-                status: targetStatus,
-                assertion,
-                summary: event.delta
-                  ? (currentData.summary || '') + event.delta
-                  : currentData.summary,
-                observation: event.observation ?? currentData.observation,
-                payload: event.payload ?? currentData.payload,
-                isCorrectionBranch:
-                  event.isCorrectionBranch ?? currentData.isCorrectionBranch,
-              } satisfies AgentNodeData,
-            }
-          })
-        )
-
-        // 节点收敛完成：停止动画；失败节点 (status === 'failed') 的边用红色警示
-        const isFailed = targetStatus === 'failed'
-        setEdges((prevEdges) =>
-          prevEdges.map((edge) => {
-            if (edge.target === event.nodeId) {
+        setNodes((prevNodes) => {
+          const exists = prevNodes.some((n) => n.id === event.nodeId)
+          if (exists) {
+            return prevNodes.map((node) => {
+              if (node.id !== event.nodeId) return node
+              const currentData = node.data as unknown as AgentNodeData
               return {
-                ...edge,
-                animated: false,
-                style: isFailed
-                  ? { stroke: '#DC2626', strokeWidth: 2 }
-                  : edge.style,
+                ...node,
+                data: {
+                  ...currentData,
+                  status: targetStatus,
+                  assertion,
+                  summary: event.delta
+                    ? (currentData.summary || '') + event.delta
+                    : ((event.payload?.summary as string | undefined) || (event.payload?.plan as string | undefined) || currentData.summary),
+                  observation: normalizedObs ?? currentData.observation,
+                  payload: event.payload ?? currentData.payload,
+                  isCorrectionBranch:
+                    event.isCorrectionBranch ?? currentData.isCorrectionBranch,
+                } satisfies AgentNodeData,
               }
+            })
+          }
+
+          // 若外部 Agent 直投 node_complete（跳过 node_start），动态自动追加新节点
+          const parentNode = event.parentId
+            ? prevNodes.find((n) => n.id === event.parentId)
+            : undefined
+
+          const posX = parentNode
+            ? parentNode.position.x + 280
+            : 50 + prevNodes.length * 280
+
+          const posY = event.isCorrectionBranch ? 340 : 180
+
+          const newNode: Node = {
+            id: event.nodeId,
+            type: 'agentNode',
+            position: { x: posX, y: posY },
+            data: {
+              title: event.title || '任务节点',
+              actor: event.actor || 'Pi (Coordinator)',
+              gesture: event.gesture || 'think',
+              status: targetStatus,
+              summary: (event.payload?.summary as string | undefined) || (event.payload?.plan as string | undefined) || event.delta || '',
+              isCorrectionBranch: event.isCorrectionBranch,
+              observation: normalizedObs,
+              payload: event.payload,
+              assertion,
+            } satisfies AgentNodeData,
+          }
+
+          const nextNodes = [...prevNodes, newNode]
+          nodesRef.current = nextNodes
+          return nextNodes
+        })
+
+        // 若有父节点且 Edge 尚未建立，动态追加并停掉动画
+        if (event.parentId) {
+          setEdges((prevEdges) => {
+            const edgeId = `e-${event.parentId}-${event.nodeId}`
+            if (prevEdges.some((e) => e.id === edgeId)) {
+              return prevEdges.map((edge) => {
+                if (edge.target === event.nodeId) {
+                  return {
+                    ...edge,
+                    animated: false,
+                    style: targetStatus === 'failed'
+                      ? { stroke: '#DC2626', strokeWidth: 2 }
+                      : edge.style,
+                  }
+                }
+                return edge
+              })
             }
-            return edge
+
+            const parentNode = nodesRef.current.find((n) => n.id === event.parentId)
+            const isBranchEdge = Boolean(
+              event.isCorrectionBranch || (parentNode?.data as unknown as AgentNodeData)?.isCorrectionBranch
+            )
+            const edgeStyle = isBranchEdge
+              ? { stroke: '#D97706', strokeWidth: 1.5, strokeDasharray: '5 4' }
+              : targetStatus === 'failed'
+                ? { stroke: '#DC2626', strokeWidth: 2 }
+                : { stroke: '#8F887D', strokeWidth: 1.5 }
+
+            const newEdge: Edge = {
+              id: edgeId,
+              source: event.parentId!,
+              target: event.nodeId,
+              type: 'smoothstep',
+              animated: false,
+              style: edgeStyle,
+            }
+            return [...prevEdges, newEdge]
           })
-        )
+        } else {
+          setEdges((prevEdges) =>
+            prevEdges.map((edge) => {
+              if (edge.target === event.nodeId) {
+                return {
+                  ...edge,
+                  animated: false,
+                  style: targetStatus === 'failed'
+                    ? { stroke: '#DC2626', strokeWidth: 2 }
+                    : edge.style,
+                }
+              }
+              return edge
+            })
+          )
+        }
 
         // 动态累加或同步上下文 Token 水位
         if (event.watermark) {
@@ -720,32 +869,110 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       }
 
       case 'gate_prompt': {
-        setNodes((prevNodes) =>
-          prevNodes.map((node) => {
-            if (node.id !== event.nodeId) return node
-            const currentData = node.data as unknown as AgentNodeData
-            return {
-              ...node,
-              data: {
-                ...currentData,
-                status: 'gate',
-                summary: event.delta
-                  ? (currentData.summary || '') + event.delta
-                  : currentData.summary,
-                observation: event.observation ?? currentData.observation,
-                isCorrectionBranch:
-                  event.isCorrectionBranch ?? currentData.isCorrectionBranch,
-              } satisfies AgentNodeData,
-            }
-          })
-        )
+        const normalizedObs = normalizeTelemetryObservation(event.observation)
+        const gatePayload: GatePromptPayload = event.gatePayload || {
+          gateId: `gate-${event.nodeId}`,
+          title: event.title || '决策门禁待审 (HITL)',
+          riskLevel: 'high',
+          proposedAction: {
+            command:
+              (typeof event.payload?.command === 'string' ? event.payload.command : '') ||
+              event.title ||
+              '敏感动作待人类审批',
+            explanation:
+              (typeof event.payload?.explanation === 'string' ? event.payload.explanation : '') ||
+              '检测到敏感操作，等待人类批准放行',
+          },
+          timestamp: new Date().toISOString(),
+        }
 
-        // 门禁等待：停止指向门禁节点的 Edge 动画
-        setEdges((prevEdges) =>
-          prevEdges.map((edge) =>
-            edge.target === event.nodeId ? { ...edge, animated: false } : edge
+        // 唤醒并设置全局挂起弹窗
+        setCurrentPendingGate(gatePayload)
+
+        setNodes((prevNodes) => {
+          const exists = prevNodes.some((n) => n.id === event.nodeId)
+          if (exists) {
+            return prevNodes.map((node) => {
+              if (node.id !== event.nodeId) return node
+              const currentData = node.data as unknown as AgentNodeData
+              return {
+                ...node,
+                data: {
+                  ...currentData,
+                  status: 'gate',
+                  summary: event.delta
+                    ? (currentData.summary || '') + event.delta
+                    : ((event.payload?.summary as string | undefined) || gatePayload.proposedAction?.command || currentData.summary),
+                  observation: normalizedObs ?? currentData.observation,
+                  isCorrectionBranch:
+                    event.isCorrectionBranch ?? currentData.isCorrectionBranch,
+                } satisfies AgentNodeData,
+              }
+            })
+          }
+
+          // 外部独立触发门禁挂起时，若该节点未声明，自动创建并追加为挂起中的门禁卡片
+          const parentNode = event.parentId
+            ? prevNodes.find((n) => n.id === event.parentId)
+            : undefined
+
+          const posX = parentNode
+            ? parentNode.position.x + 280
+            : 50 + prevNodes.length * 280
+
+          const posY = event.isCorrectionBranch ? 340 : 180
+
+          const newNode: Node = {
+            id: event.nodeId,
+            type: 'agentNode',
+            position: { x: posX, y: posY },
+            data: {
+              title: event.title || gatePayload.title || '决策门禁待审 (HITL)',
+              actor: event.actor || 'Human Operator',
+              gesture: 'gate',
+              status: 'gate',
+              summary:
+                (event.payload?.summary as string | undefined) ||
+                gatePayload.proposedAction?.command ||
+                '敏感动作待人类审批',
+              isCorrectionBranch: event.isCorrectionBranch,
+              observation: normalizedObs,
+              payload: event.payload,
+            } satisfies AgentNodeData,
+          }
+
+          const nextNodes = [...prevNodes, newNode]
+          nodesRef.current = nextNodes
+          return nextNodes
+        })
+
+        // 若有父节点且 Edge 尚未建立，动态追加指向该门禁节点的连线
+        if (event.parentId) {
+          setEdges((prevEdges) => {
+            const edgeId = `e-${event.parentId}-${event.nodeId}`
+            if (prevEdges.some((e) => e.id === edgeId)) {
+              return prevEdges.map((edge) =>
+                edge.target === event.nodeId ? { ...edge, animated: false } : edge
+              )
+            }
+
+            const newEdge: Edge = {
+              id: edgeId,
+              source: event.parentId!,
+              target: event.nodeId,
+              type: 'smoothstep',
+              animated: true,
+              style: { stroke: '#D97706', strokeWidth: 1.5, strokeDasharray: '4 4' },
+            }
+            return [...prevEdges, newEdge]
+          })
+        } else {
+          setEdges((prevEdges) =>
+            prevEdges.map((edge) =>
+              edge.target === event.nodeId ? { ...edge, animated: false } : edge
+            )
           )
-        )
+        }
 
         // 门禁到达：更新上下文 Token 水位
         if (event.watermark) {
@@ -764,11 +991,23 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       }
 
       case 'gate_resolved': {
-        const decision = event.gateDecision
+        const decision = event.gateDecision || { action: 'approve' }
         const isRejected = decision?.action === 'reject'
         const isModified = decision?.action === 'modify'
         const newStatus: TelemetryStatus = isRejected ? 'rejected' : 'completed'
         const steering = decision?.modifiedCommand || decision?.feedback
+
+        setCurrentPendingGate((prev) => {
+          if (!prev) return null
+          if (
+            prev.gateId === event.nodeId ||
+            prev.gateId === `gate-${event.nodeId}` ||
+            (event.gatePayload?.gateId && prev.gateId === event.gatePayload.gateId)
+          ) {
+            return null
+          }
+          return prev
+        })
 
         setNodes((prevNodes) =>
           prevNodes.map((node) => {
@@ -911,6 +1150,13 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     setNodes(initialNodes)
     setEdges(initialEdges)
   }, [initialNodes, initialEdges, setNodes, setEdges])
+
+  // 在 Live Bridge 连通状态下，支持一键清空画布以接收干净的外部 Agent 流
+  const clearCanvas = useCallback(() => {
+    resetStream()
+    setNodes([])
+    setEdges([])
+  }, [resetStream, setNodes, setEdges])
 
   /**
    * 一键执行上下文剪枝：将冗余工具调用折叠压缩为摘要，释放 Token 水位
@@ -1303,6 +1549,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     playSelfCorrectionStream,
     triggerHitlGate,
     resetStream,
+    clearCanvas,
     stopStream,
     isPlaying,
     isPaused,
