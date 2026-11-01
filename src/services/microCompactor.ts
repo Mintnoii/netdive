@@ -190,6 +190,36 @@ export class PrefixMutationError extends Error {
 }
 
 /**
+ * 统一步进工具输出为规约化的纯行集合与源文本元数据
+ * 一次解析，源头治理，彻底消灭下游函数反复多次 Array.isArray 样板
+ */
+function resolveOutputPayload(output: string | string[]): {
+  lines: string[]
+  rawText: string
+  totalLines: number
+  totalChars: number
+} {
+  if (Array.isArray(output)) {
+    const rawText = output.join('\n')
+    return {
+      lines: output,
+      rawText,
+      totalLines: output.length,
+      totalChars: rawText.length,
+    }
+  }
+
+  const rawText = typeof output === 'string' ? output : String(output ?? '')
+  const lines = rawText.includes('\n') ? rawText.split('\n') : [rawText]
+  return {
+    lines,
+    rawText,
+    totalLines: lines.length,
+    totalChars: rawText.length,
+  }
+}
+
+/**
  * 检测输出是否满足微压缩触发条件 (Rule 1)
  * 条件：行数 > 40 行 或 字符数 > 1500 字符
  */
@@ -199,42 +229,20 @@ export function isCompactionNeeded(
 ): boolean {
   const maxLines = options.maxLinesThreshold ?? DEFAULT_MAX_LINES_THRESHOLD
   const maxChars = options.maxCharsThreshold ?? DEFAULT_MAX_CHARS_THRESHOLD
-
-  if (Array.isArray(output)) {
-    const totalLines = output.length
-    const totalChars = output.reduce((acc, line) => acc + line.length + 1, 0)
-    return totalLines > maxLines || totalChars > maxChars
-  }
-
-  if (typeof output !== 'string') return false
-  if (output.length > maxChars) return true
-
-  // 避免对极长文本无谓全量 split，快速检测换行符个数
-  let newlineCount = 0
-  for (let i = 0; i < output.length; i++) {
-    if (output.charCodeAt(i) === 10) {
-      // '\n'
-      newlineCount++
-      if (newlineCount > maxLines) return true
-    }
-  }
-
-  return newlineCount > maxLines
+  const { totalLines, totalChars } = resolveOutputPayload(output)
+  return totalLines > maxLines || totalChars > maxChars
 }
 
 /**
  * 统一标准化行列表 (支持针对超长单行进行合理分行，便于保留头部与尾部上下文)
  */
-function normalizeOutputToLines(output: string | string[]): string[] {
-  const rawLines = Array.isArray(output) ? output : output.split('\n')
-  const totalChars = Array.isArray(output)
-    ? output.reduce((acc, l) => acc + l.length + 1, 0)
-    : output.length
+function normalizeOutputToLines(payload: { lines: string[]; totalChars: number }): string[] {
+  const { lines, totalChars } = payload
 
   // 若总行数 <= 30 但总字符数 > 1500，按保证产生 > 30 行的步长对超长行分块，确保有效折叠
-  if (rawLines.length <= 30 && totalChars > DEFAULT_MAX_CHARS_THRESHOLD) {
+  if (lines.length <= 30 && totalChars > DEFAULT_MAX_CHARS_THRESHOLD) {
     const chunkSize = Math.min(50, Math.max(10, Math.floor(totalChars / 32)))
-    return rawLines.flatMap((line) => {
+    return lines.flatMap((line) => {
       if (line.length <= chunkSize) return [line]
       const chunks: string[] = []
       for (let i = 0; i < line.length; i += chunkSize) {
@@ -244,7 +252,7 @@ function normalizeOutputToLines(output: string | string[]): string[] {
     })
   }
 
-  return rawLines
+  return lines
 }
 
 /**
@@ -262,10 +270,10 @@ export function compactToolLines(
   compactedChars: number
   foldedLinesCount: number
 } {
-  const rawText = Array.isArray(output) ? output.join('\n') : output
-  const lines = normalizeOutputToLines(output)
+  const payload = resolveOutputPayload(output)
+  const lines = normalizeOutputToLines(payload)
   const originalLines = lines.length
-  const originalChars = rawText.length
+  const originalChars = payload.totalChars
 
   const maxLines = options.maxLinesThreshold ?? DEFAULT_MAX_LINES_THRESHOLD
   const maxChars = options.maxCharsThreshold ?? DEFAULT_MAX_CHARS_THRESHOLD
@@ -278,7 +286,7 @@ export function compactToolLines(
   if (!needsCompaction || originalLines <= minLinesToFold) {
     return {
       compacted: false,
-      compactedText: rawText,
+      compactedText: payload.rawText,
       originalLines,
       originalChars,
       compactedLines: originalLines,
@@ -383,6 +391,7 @@ export class MicroCompactor {
 
   /**
    * 获取 WAL 统计指标 (全量字符、压缩字符、释放字符数)
+   * 声明式集合归约 (Reduce)，消除命令式可变累加变量
    */
   getWalStats(): {
     totalEntries: number
@@ -390,12 +399,9 @@ export class MicroCompactor {
     totalCompactedChars: number
     totalReclaimedChars: number
   } {
-    let totalRawChars = 0
-    let totalCompactedChars = 0
-    for (const record of this.walRegistry.values()) {
-      totalRawChars += record.originalChars
-      totalCompactedChars += record.compactedChars
-    }
+    const records = Array.from(this.walRegistry.values())
+    const totalRawChars = records.reduce((acc, r) => acc + r.originalChars, 0)
+    const totalCompactedChars = records.reduce((acc, r) => acc + r.compactedChars, 0)
     return {
       totalEntries: this.walRegistry.size,
       totalRawChars,
@@ -421,7 +427,7 @@ export class MicroCompactor {
       metadata?: Record<string, unknown>
     } = {}
   ): MicroCompactResult {
-    const rawText = Array.isArray(output) ? output.join('\n') : output
+    const payload = resolveOutputPayload(output)
     const compaction = compactToolLines(output, this.options)
 
     const exitCode = params.exitCode
@@ -435,7 +441,7 @@ export class MicroCompactor {
     if (!compaction.compacted) {
       return {
         compacted: false,
-        output: rawText,
+        output: payload.rawText,
         exitCode,
         compactSummary,
         originalLines: compaction.originalLines,
@@ -448,6 +454,7 @@ export class MicroCompactor {
 
     // 触发微压缩：生成 pointerId 并落盘到内存 WAL 注册表 (Rule 3)
     const pointerId = params.pointerId || this.generatePointerId()
+    const rawText = payload.rawText
     const reclaimedChars = compaction.originalChars - compaction.compactedChars
 
     const walRecord: WalRecord = {

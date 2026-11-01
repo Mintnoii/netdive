@@ -196,52 +196,29 @@ export interface TelemetryObservation {
   [key: string]: unknown
 }
 
+/** 单项元素原子转文本原语 */
+function extractItemToString(item: unknown): string {
+  if (typeof item === 'string') return item
+  if (item && typeof item === 'object') {
+    const obj = item as Record<string, unknown>
+    if (typeof obj.text === 'string') return obj.text
+    if (typeof obj.content === 'string') return obj.content
+    if (typeof obj.message === 'string') return obj.message
+    return JSON.stringify(item)
+  }
+  return item !== undefined && item !== null ? String(item) : ''
+}
+
 /**
  * 安全规约任何形状的工具执行输出为 string[]
- * 彻底消除 output.some / output.map / output.join 不是函数的白屏隐患
+ * 统一归一化为单层集合，消灭内外重复 30 行类型判断八股
  */
 export function normalizeObservationOutput(output: unknown): string[] {
-  if (Array.isArray(output)) {
-    return output.flatMap((item) => {
-      if (typeof item === 'string') {
-        return item.includes('\n') ? item.split(/\r?\n/) : [item]
-      }
-      if (item && typeof item === 'object') {
-        const obj = item as Record<string, unknown>
-        if (typeof obj.text === 'string') {
-          return obj.text.includes('\n') ? obj.text.split(/\r?\n/) : [obj.text]
-        }
-        if (typeof obj.content === 'string') {
-          return obj.content.includes('\n') ? obj.content.split(/\r?\n/) : [obj.content]
-        }
-        if (typeof obj.message === 'string') {
-          return [obj.message]
-        }
-        return [JSON.stringify(item)]
-      }
-      if (item !== undefined && item !== null) {
-        return [String(item)]
-      }
-      return []
-    })
-  }
-  if (typeof output === 'string') {
-    return output.split(/\r?\n/)
-  }
-  if (output && typeof output === 'object') {
-    const obj = output as Record<string, unknown>
-    if (typeof obj.text === 'string') {
-      return obj.text.includes('\n') ? obj.text.split(/\r?\n/) : [obj.text]
-    }
-    if (typeof obj.content === 'string') {
-      return obj.content.includes('\n') ? obj.content.split(/\r?\n/) : [obj.content]
-    }
-    return [JSON.stringify(output)]
-  }
-  if (output !== undefined && output !== null) {
-    return [String(output)]
-  }
-  return []
+  if (output === null || output === undefined) return []
+  const rawList = Array.isArray(output) ? output : [output]
+  return rawList
+    .map(extractItemToString)
+    .flatMap((str) => (str.includes('\n') ? str.split(/\r?\n/) : [str]))
 }
 
 /**

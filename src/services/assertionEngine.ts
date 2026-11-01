@@ -6,6 +6,7 @@ import type {
   TelemetryStatus,
 } from '../types/telemetry'
 import { normalizeObservationOutput } from '../types/telemetry'
+import { tryit } from 'radash'
 
 export type { AssertionResult }
 
@@ -28,13 +29,11 @@ export interface ToolExecutionContext {
   schemaValidator?: (data: unknown) => boolean
 }
 
-/** 高危命令检测正则模式表 */
+/** 高危命令检测模式表（声明式规则体系） */
 export const HIGH_RISK_COMMAND_PATTERNS: RegExp[] = [
-  /\bgit\s+(commit|push|reset\s+--hard|clean\s+-[a-zA-Z]*f)/i,
-  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f\b/i,
-  /\brm\s+-[a-zA-Z]*f[a-zA-Z]*r\b/i,
-  /\brm\s+-[a-zA-Z]*r\b/i,
-  /\brmdir\s+\/s/i,
+  /\bgit\s+(commit|push|reset\s+--hard|clean\s+-[a-zA-Z]*f\b)/i,
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*\b/i,
+  /\brmdir\s+\/s\b/i,
   /\bdel\s+\/[a-zA-Z0-9\s]*\b/i,
   /\b(drop|truncate)\s+(table|database|schema)\b/i,
   /\bdelete\s+from\b/i,
@@ -42,7 +41,7 @@ export const HIGH_RISK_COMMAND_PATTERNS: RegExp[] = [
   /\bdd\s+if=/i,
   /\bchmod\s+(-R\s+)?777\b/i,
   /\bkubectl\s+delete\b/i,
-  /\bdocker\s+(system\s+prune|rm\s+-f)/i,
+  /\bdocker\s+(system\s+prune|rm\s+-f\b)/i,
 ]
 
 /** AST 语法树异常模式表 */
@@ -72,31 +71,16 @@ export const SCHEMA_ERROR_PATTERNS: RegExp[] = [
 
 /**
  * 提取并检测高危命令模式 (Rule 3)
+ * 声明式模式匹配直给，消除天书正则与心虚 includes 兜底负向叠加
  */
 export function matchHighRiskCommand(command: string): { matched: boolean; pattern?: string } {
   if (!command || typeof command !== 'string') return { matched: false }
   const trimmed = command.trim()
 
-  for (const pattern of HIGH_RISK_COMMAND_PATTERNS) {
-    const match = trimmed.match(pattern)
-    if (match) {
-      return { matched: true, pattern: match[0] }
-    }
-  }
-
-  // 兜底直接关键词检测
-  const lower = trimmed.toLowerCase()
-  if (lower.includes('git commit') || lower.includes('git push')) {
-    return { matched: true, pattern: 'git commit/push' }
-  }
-  if (lower.includes('rm -rf') || lower.includes('rm -r')) {
-    return { matched: true, pattern: 'rm -rf' }
-  }
-  if (lower.includes('drop table') || lower.includes('drop database')) {
-    return { matched: true, pattern: 'drop table' }
-  }
-  if (lower.includes('truncate table')) {
-    return { matched: true, pattern: 'truncate table' }
+  const matchedPattern = HIGH_RISK_COMMAND_PATTERNS.find((pattern) => pattern.test(trimmed))
+  if (matchedPattern) {
+    const match = trimmed.match(matchedPattern)
+    return { matched: true, pattern: match ? match[0] : trimmed }
   }
 
   return { matched: false }
@@ -104,21 +88,18 @@ export function matchHighRiskCommand(command: string): { matched: boolean; patte
 
 /**
  * 检测输出中是否存在 AST 语法树异常
+ * 集合先行 + Fail-Fast：声明式 find + some 消灭双重嵌套 for 循环
  */
 export function detectAstError(outputLines: string[]): string | null {
-  for (const line of outputLines) {
-    for (const pattern of AST_ERROR_PATTERNS) {
-      const match = line.match(pattern)
-      if (match) {
-        return line.trim()
-      }
-    }
-  }
-  return null
+  const matchedLine = outputLines.find((line) =>
+    AST_ERROR_PATTERNS.some((pattern) => pattern.test(line))
+  )
+  return matchedLine ? matchedLine.trim() : null
 }
 
 /**
  * 检测输出中是否存在超时或死锁异常
+ * 集合先行 + Fail-Fast：声明式 find + some 消灭双重嵌套 for 循环
  */
 export function detectTimeoutOrDeadlock(outputLines: string[], exitCode?: number): string | null {
   // exitCode 124 (GNU timeout) or 143 (SIGTERM timeout)
@@ -126,19 +107,15 @@ export function detectTimeoutOrDeadlock(outputLines: string[], exitCode?: number
     return `Process terminated by timeout (exit code ${exitCode})`
   }
 
-  for (const line of outputLines) {
-    for (const pattern of TIMEOUT_DEADLOCK_PATTERNS) {
-      const match = line.match(pattern)
-      if (match) {
-        return line.trim()
-      }
-    }
-  }
-  return null
+  const matchedLine = outputLines.find((line) =>
+    TIMEOUT_DEADLOCK_PATTERNS.some((pattern) => pattern.test(line))
+  )
+  return matchedLine ? matchedLine.trim() : null
 }
 
 /**
  * 检测输出或 Payload 中是否存在 Schema 校验异常
+ * 依托 radash.tryit 优雅解构，消灭原生 try/catch 与双重嵌套 for 循环
  */
 export function detectSchemaError(
   outputLines: string[],
@@ -146,23 +123,17 @@ export function detectSchemaError(
   validator?: (data: unknown) => boolean
 ): string | null {
   if (validator && payload) {
-    try {
-      const valid = validator(payload)
-      if (!valid) return 'Payload failed custom schema validator contract'
-    } catch (err) {
+    const [err, valid] = tryit(validator)(payload)
+    if (err) {
       return `Payload schema validation exception: ${err instanceof Error ? err.message : String(err)}`
     }
+    if (!valid) return 'Payload failed custom schema validator contract'
   }
 
-  for (const line of outputLines) {
-    for (const pattern of SCHEMA_ERROR_PATTERNS) {
-      const match = line.match(pattern)
-      if (match) {
-        return line.trim()
-      }
-    }
-  }
-  return null
+  const matchedLine = outputLines.find((line) =>
+    SCHEMA_ERROR_PATTERNS.some((pattern) => pattern.test(line))
+  )
+  return matchedLine ? matchedLine.trim() : null
 }
 
 /**
@@ -263,14 +234,11 @@ export class AssertionEngine {
     // -------------------------------------------------------------------------
     // Rule 3: 高危命令模式断言 (High-Risk Command Pattern Assertion)
     // -------------------------------------------------------------------------
+    const proposedAction = context.payload?.proposedAction as { command?: string } | undefined
     const commandToCheck =
       context.command ||
       (typeof context.payload?.command === 'string' ? context.payload.command : undefined) ||
-      (typeof context.payload?.proposedAction === 'object' &&
-      context.payload?.proposedAction !== null &&
-      'command' in context.payload.proposedAction
-        ? String((context.payload.proposedAction as { command?: unknown }).command || '')
-        : undefined) ||
+      (typeof proposedAction?.command === 'string' ? proposedAction.command : undefined) ||
       (context.gesture === 'bash' ? context.title : undefined)
 
     if (commandToCheck) {
@@ -424,14 +392,11 @@ export class AssertionEngine {
   private normalizeInput(input: ToolExecutionContext | TelemetryEvent): ToolExecutionContext {
     if ('type' in input) {
       const event = input as TelemetryEvent
+      const proposedAction = event.payload?.proposedAction as { command?: string } | undefined
       const command =
         (typeof event.payload?.command === 'string' ? event.payload.command : undefined) ||
         event.gatePayload?.proposedAction?.command ||
-        (typeof event.payload?.proposedAction === 'object' &&
-        event.payload?.proposedAction !== null &&
-        'command' in event.payload.proposedAction
-          ? String((event.payload.proposedAction as { command?: unknown }).command || '')
-          : undefined) ||
+        (typeof proposedAction?.command === 'string' ? proposedAction.command : undefined) ||
         event.title
 
       return {

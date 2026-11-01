@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 620" width="100%" height="100%" style="background:#0f172a; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <!-- 背景点阵网格 -->
+    <pattern id="dotGrid" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#1e293b" />
+    </pattern>
+
+    <!-- 箭头标记 -->
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#22d3ee" />
+    </marker>
+    <marker id="arrow-emerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#34d399" />
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#fbbf24" />
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#c084fc" />
+    </marker>
+  </defs>
+
+  <!-- 网格底纹 -->
+  <rect width="100%" height="100%" fill="url(#dotGrid)" />
+
+  <!-- 顶部主标题 -->
+  <text x="50" y="48" fill="#f8fafc" font-size="20" font-weight="700" letter-spacing="0.5">Tachikoma 极速先导对接架构：零阻塞 4 步短链路实测方案</text>
+  <text x="50" y="74" fill="#94a3b8" font-size="12">小步快跑 · 纯线性因果链路 · 零复杂状态回溯 · 10 秒打通生产狗粮闭环</text>
+
+  <!-- ==================== 区域 1: Tachikoma 执行控制流 ==================== -->
+  <g id="tachikoma-flow">
+    <rect x="50" y="110" width="1000" height="180" rx="12" fill="#131e36" stroke="#334155" stroke-dasharray="6 6" />
+    <text x="75" y="140" fill="#38bdf8" font-size="12" font-weight="600" text-transform="uppercase" letter-spacing="1">Tachikoma 纯线性流水线 (CLI Execution)</text>
+
+    <!-- Step 1: HTTP 直通 -->
+    <rect x="75" y="160" width="200" height="105" rx="8" fill="rgba(8,51,68,0.5)" stroke="#0e7490" stroke-width="1.5" />
+    <text x="90" y="188" fill="#e0f2fe" font-size="13" font-weight="600">1. Tier-1 Fast-HTTP</text>
+    <text x="90" y="212" fill="#94a3b8" font-size="11">秒级直通抓取 HTML</text>
+    <text x="90" y="234" fill="#67e8f9" font-size="10" font-family="monospace">reporter.step('fetch')</text>
+
+    <!-- 箭头 1 -> 2 -->
+    <path d="M 275 212 L 320 212" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrow-cyan)" />
+
+    <!-- Step 2: 正文提取与清洗 -->
+    <rect x="320" y="160" width="200" height="105" rx="8" fill="rgba(6,78,59,0.4)" stroke="#059669" stroke-width="1.5" />
+    <text x="335" y="188" fill="#d1fae5" font-size="13" font-weight="600">2. 正文提纯 (Clean)</text>
+    <text x="335" y="212" fill="#94a3b8" font-size="11">消灭客套话/版权噪音</text>
+    <text x="335" y="234" fill="#6ee7b7" font-size="10" font-family="monospace">reporter.step('clean')</text>
+
+    <!-- 箭头 2 -> 3 -->
+    <path d="M 520 212 L 565 212" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#arrow-emerald)" />
+
+    <!-- Step 3: LLM 6+1 领域分类 -->
+    <rect x="565" y="160" width="200" height="105" rx="8" fill="rgba(76,29,149,0.3)" stroke="#7c3aed" stroke-width="1.5" />
+    <text x="580" y="188" fill="#ede9fe" font-size="13" font-weight="600">3. 语义分类 (LLM)</text>
+    <text x="580" y="212" fill="#94a3b8" font-size="11">提纯 6+1 领域标签</text>
+    <text x="580" y="234" fill="#c084fc" font-size="10" font-family="monospace">reporter.step('classify')</text>
+
+    <!-- 箭头 3 -> 4 -->
+    <path d="M 765 212 L 810 212" fill="none" stroke="#c084fc" stroke-width="2" marker-end="url(#arrow-purple)" />
+
+    <!-- Step 4: 极速落盘 -->
+    <rect x="810" y="160" width="215" height="105" rx="8" fill="rgba(120,53,15,0.3)" stroke="#d97706" stroke-width="1.5" />
+    <text x="825" y="188" fill="#fef3c7" font-size="13" font-weight="600">4. 磁盘持久化 (Write)</text>
+    <text x="825" y="212" fill="#94a3b8" font-size="11">落盘 _raw/articles/ 或 SQLite</text>
+    <text x="825" y="234" fill="#fcd34d" font-size="10" font-family="monospace">reporter.complete()</text>
+  </g>
+
+  <!-- 中间传输通道 (单向流，无阻塞) -->
+  <path d="M 550 290 L 550 350" fill="none" stroke="#34d399" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arrow-emerald)" />
+  <rect x="420" y="308" width="260" height="26" rx="4" fill="#064e3b" stroke="#059669" />
+  <text x="430" y="325" fill="#a7f3d0" font-size="11" font-family="monospace">Fail-Silent 异步发射 ➔ NetDive Bridge</text>
+
+  <!-- ==================== 区域 2: NetDive 实时呈现效果 ==================== -->
+  <g id="netdive-view">
+    <rect x="50" y="360" width="1000" height="220" rx="12" fill="#1e293b" stroke="#475569" stroke-width="1.5" />
+    <rect x="50" y="360" width="1000" height="34" rx="12" fill="#334155" />
+    <circle cx="70" cy="377" r="4" fill="#fb7185" />
+    <circle cx="85" cy="377" r="4" fill="#fbbf24" />
+    <circle cx="100" cy="377" r="4" fill="#34d399" />
+    <text x="120" y="382" fill="#f8fafc" font-size="12" font-weight="600">NetDive 实时控制台第二屏幕：无需刷新，秒级点亮因果节点</text>
+
+    <!-- Node 1 in NetDive -->
+    <rect x="80" y="420" width="190" height="135" rx="8" fill="#082f49" stroke="#0284c7" stroke-width="1.5" />
+    <text x="95" y="445" fill="#38bdf8" font-size="12" font-weight="600">网络抓取 (Fetch)</text>
+    <text x="95" y="470" fill="#94a3b8" font-size="11">协议: Fast-HTTP</text>
+    <text x="95" y="490" fill="#94a3b8" font-size="11">耗时: 128ms</text>
+    <rect x="95" y="510" width="80" height="22" rx="4" fill="#0369a1" />
+    <text x="105" y="525" fill="#f0f9ff" font-size="10">HTTP 200 OK</text>
+
+    <!-- Arrow N1 -> N2 -->
+    <path d="M 270 487 L 320 487" fill="none" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-cyan)" />
+
+    <!-- Node 2 in NetDive -->
+    <rect x="320" y="420" width="190" height="135" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="1.5" />
+    <text x="335" y="445" fill="#34d399" font-size="12" font-weight="600">清洗提纯 (Clean)</text>
+    <text x="335" y="470" fill="#94a3b8" font-size="11">原始字数: 8,420</text>
+    <text x="335" y="490" fill="#94a3b8" font-size="11">有效正文: 5,120</text>
+    <rect x="335" y="510" width="85" height="22" rx="4" fill="#047857" />
+    <text x="343" y="525" fill="#ecfdf5" font-size="10">去除噪声 39%</text>
+
+    <!-- Arrow N2 -> N3 -->
+    <path d="M 510 487 L 560 487" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#arrow-emerald)" />
+
+    <!-- Node 3 in NetDive -->
+    <rect x="560" y="420" width="190" height="135" rx="8" fill="#2e1065" stroke="#7c3aed" stroke-width="1.5" />
+    <text x="575" y="445" fill="#c084fc" font-size="12" font-weight="600">语义归类 (Classify)</text>
+    <text x="575" y="470" fill="#94a3b8" font-size="11">Token: 1.1k</text>
+    <text x="575" y="490" fill="#94a3b8" font-size="11">归属: arsenal·工具</text>
+    <rect x="575" y="510" width="85" height="22" rx="4" fill="#581c87" />
+    <text x="585" y="525" fill="#f3e8ff" font-size="10">置信度: High</text>
+
+    <!-- Arrow N3 -> N4 -->
+    <path d="M 750 487 L 800 487" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow-purple)" />
+
+    <!-- Node 4 in NetDive -->
+    <rect x="800" y="420" width="220" height="135" rx="8" fill="#451a03" stroke="#f59e0b" stroke-width="1.5" />
+    <text x="815" y="445" fill="#fbbf24" font-size="12" font-weight="600">完成落盘 (Persist)</text>
+    <text x="815" y="470" fill="#94a3b8" font-size="11">目标: _raw/articles/2026-...</text>
+    <text x="815" y="490" fill="#94a3b8" font-size="11">全流程总耗时: 1.8s</text>
+    <rect x="815" y="510" width="100" height="22" rx="4" fill="#b45309" />
+    <text x="825" y="525" fill="#fef3c7" font-size="10">✔ 摄入成功归档</text>
+  </g>
+</svg>

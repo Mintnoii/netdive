@@ -39,68 +39,65 @@ export interface ParsedTranscript {
 }
 
 /**
+ * 扁平字典映射表：工程函数式查表法消除 50 行 if/else 级联
+ */
+const TOOL_GESTURE_MAP: Readonly<Record<string, TelemetryGesture>> = {
+  bash: 'bash',
+  exec: 'bash',
+  command: 'bash',
+  terminal: 'bash',
+  sh: 'bash',
+  edit: 'edit',
+  write: 'edit',
+  notebookedit: 'edit',
+  patch: 'edit',
+  apply_diff: 'edit',
+  read: 'read',
+  grep: 'read',
+  glob: 'read',
+  find: 'read',
+  source_check: 'read',
+  fetch_content: 'read',
+  web_search: 'read',
+  websearch: 'read',
+  webfetch: 'read',
+  gate: 'gate',
+  askuserquestion: 'gate',
+  approval: 'gate',
+  confirm: 'gate',
+  scratchpad: 'memory',
+  honcho: 'memory',
+}
+
+/**
  * 将工具名称规约为 NetDive 标准手势类型
+ * O(1) 字典查表直给，彻底消灭过程式分支
+ *
+ * @example
+ * ```ts
+ * mapToolNameToGesture('bash')       // => 'bash'
+ * mapToolNameToGesture('write')      // => 'edit'
+ * mapToolNameToGesture('grep')       // => 'read'
+ * mapToolNameToGesture('memory_add') // => 'memory'
+ * mapToolNameToGesture('unknown')    // => 'think'
+ * ```
  */
 export function mapToolNameToGesture(toolName?: string): TelemetryGesture {
   if (!toolName) return 'think'
   const name = toolName.toLowerCase()
-
-  if (
-    name === 'bash' ||
-    name === 'exec' ||
-    name === 'command' ||
-    name === 'terminal' ||
-    name === 'sh'
-  ) {
-    return 'bash'
-  }
-
-  if (
-    name === 'edit' ||
-    name === 'write' ||
-    name === 'notebookedit' ||
-    name === 'patch' ||
-    name === 'apply_diff'
-  ) {
-    return 'edit'
-  }
-
-  if (
-    name === 'read' ||
-    name === 'grep' ||
-    name === 'glob' ||
-    name === 'find' ||
-    name === 'source_check' ||
-    name === 'fetch_content' ||
-    name === 'web_search' ||
-    name === 'websearch' ||
-    name === 'webfetch'
-  ) {
-    return 'read'
-  }
-
-  if (
-    name.startsWith('memory') ||
-    name === 'scratchpad' ||
-    name === 'honcho'
-  ) {
-    return 'memory'
-  }
-
-  if (
-    name === 'gate' ||
-    name === 'askuserquestion' ||
-    name === 'approval' ||
-    name === 'confirm'
-  ) {
-    return 'gate'
-  }
-
-  return 'think'
+  if (name.startsWith('memory')) return 'memory'
+  return TOOL_GESTURE_MAP[name] ?? 'think'
 }
 
 /**
- * 依据工具名与入参生成精炼的标题
+ * 依据工具名与入参生成精炼的标题 (Shape By Example)
+ *
+ * @example
+ * ```ts
+ * formatToolTitle('bash', { command: 'pnpm test' })             // => '$ pnpm test'
+ * formatToolTitle('read', { path: 'src/types/telemetry.ts' })   // => 'read: telemetry.ts'
+ * formatToolTitle('grep', { pattern: 'tryit' })                 // => 'rg "tryit"'
+ * ```
  */
 export function formatToolTitle(toolName: string, args?: Record<string, unknown>): string {
   const name = toolName.trim()
@@ -149,27 +146,529 @@ function extractTextContent(content: unknown): string {
   return ''
 }
 
+/** 解析器运行期内部状态上下文 */
+interface ParserContext {
+  session: SessionMetadata
+  events: TelemetryEvent[]
+  toolCallEventMap: Map<string, TelemetryEvent>
+  idAliasMap: Map<string, string>
+  lastEventId?: string
+  turnCounter: number
+  isPiSession: boolean
+  isClaudeSession: boolean
+}
+
 /**
- * 核心：解析 Pi / Claude JSONL 文本为标准 TelemetryEvent[] 拓扑序列
+ * 处理 Pi 会话头部及模型变更元数据
+ */
+function handlePiMetadata(record: Record<string, unknown>, ctx: ParserContext): boolean {
+  if (record.type === 'session') {
+    ctx.isPiSession = true
+    ctx.session.format = 'pi'
+    if (typeof record.id === 'string') ctx.session.id = record.id
+    if (typeof record.version === 'number' || typeof record.version === 'string') {
+      ctx.session.version = record.version
+    }
+    if (typeof record.timestamp === 'string') ctx.session.timestamp = record.timestamp
+    if (typeof record.cwd === 'string') {
+      ctx.session.cwd = record.cwd
+      ctx.session.cwdBase = basename(record.cwd)
+    }
+    return true
+  }
+
+  if (record.type === 'model_change') {
+    ctx.isPiSession = true
+    ctx.session.format = 'pi'
+    if (typeof record.provider === 'string') ctx.session.provider = record.provider
+    if (typeof record.modelId === 'string') ctx.session.modelId = record.modelId
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 处理 Claude Code 会话头部及附件元数据
+ */
+function handleClaudeMetadata(record: Record<string, unknown>, ctx: ParserContext): boolean {
+  if (record.type === 'last-prompt' && typeof record.sessionId === 'string') {
+    ctx.isClaudeSession = true
+    ctx.session.format = 'claude'
+    ctx.session.id = record.sessionId
+    ctx.session.sessionId = record.sessionId
+    return true
+  }
+
+  if (record.type === 'attachment') {
+    ctx.isClaudeSession = true
+    ctx.session.format = 'claude'
+    if (typeof record.sessionId === 'string') ctx.session.sessionId = record.sessionId
+    if (typeof record.cwd === 'string') {
+      ctx.session.cwd = record.cwd
+      ctx.session.cwdBase = basename(record.cwd)
+    }
+    if (typeof record.gitBranch === 'string') ctx.session.gitBranch = record.gitBranch
+    if (typeof record.version === 'string') ctx.session.version = record.version
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 处理 Pi 用户轮次消息
+ */
+function handlePiUserMessage(
+  record: Record<string, unknown>,
+  msg: Record<string, unknown>,
+  msgId: string,
+  parentMsgId: string | undefined,
+  ctx: ParserContext
+): void {
+  ctx.turnCounter++
+  const userText = extractTextContent(msg.content)
+  const event: TelemetryEvent = {
+    traceId: ctx.session.id,
+    nodeId: msgId,
+    parentId: parentMsgId,
+    type: 'node_complete',
+    gesture: 'read',
+    actor: 'Human Operator',
+    title: '用户意图指令',
+    status: 'completed',
+    delta: userText,
+    timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
+  }
+  ctx.events.push(event)
+  ctx.idAliasMap.set(msgId, msgId)
+  ctx.lastEventId = msgId
+}
+
+/**
+ * 处理 Pi 助手回复、思考及工具调用
+ */
+function handlePiAssistantMessage(
+  record: Record<string, unknown>,
+  msg: Record<string, unknown>,
+  msgId: string,
+  parentMsgId: string | undefined,
+  ctx: ParserContext
+): void {
+  ctx.turnCounter++
+  const content = msg.content
+  if (!Array.isArray(content)) return
+
+  let stepParentId = parentMsgId
+  const timestamp = typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now()
+
+  for (let i = 0; i < content.length; i++) {
+    const block = content[i]
+    if (!block || typeof block !== 'object') continue
+    const b = block as Record<string, unknown>
+
+    if (b.type === 'thinking' && typeof b.thinking === 'string') {
+      const thinkNodeId = `${msgId}-think-${i}`
+      const event: TelemetryEvent = {
+        traceId: ctx.session.id,
+        nodeId: thinkNodeId,
+        parentId: stepParentId,
+        type: 'node_complete',
+        gesture: 'think',
+        actor: (ctx.session.modelId || 'Pi (Coordinator)') as TelemetryActor,
+        title: '目标规划与分解',
+        status: 'completed',
+        delta: b.thinking,
+        timestamp,
+      }
+      ctx.events.push(event)
+      ctx.idAliasMap.set(msgId, thinkNodeId)
+      stepParentId = thinkNodeId
+      ctx.lastEventId = thinkNodeId
+      continue
+    }
+
+    if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+      const textNodeId = `${msgId}-text-${i}`
+      const event: TelemetryEvent = {
+        traceId: ctx.session.id,
+        nodeId: textNodeId,
+        parentId: stepParentId,
+        type: 'node_complete',
+        gesture: 'think',
+        actor: (ctx.session.modelId || 'Pi (Coordinator)') as TelemetryActor,
+        title: '决策输出与复盘',
+        status: 'completed',
+        delta: b.text,
+        timestamp,
+      }
+      ctx.events.push(event)
+      ctx.idAliasMap.set(msgId, textNodeId)
+      stepParentId = textNodeId
+      ctx.lastEventId = textNodeId
+      continue
+    }
+
+    if (b.type === 'toolCall') {
+      ctx.session.totalTools++
+      const toolName = String(b.name || 'tool')
+      const toolCallId = String(b.id || `${msgId}-tool-${i}`)
+      const toolArgs = (b.arguments && typeof b.arguments === 'object' ? b.arguments : {}) as Record<string, unknown>
+      const gesture = mapToolNameToGesture(toolName)
+      const title = formatToolTitle(toolName, toolArgs)
+
+      const event: TelemetryEvent = {
+        traceId: ctx.session.id,
+        nodeId: toolCallId,
+        parentId: stepParentId,
+        type: 'node_complete',
+        gesture,
+        actor: 'Claude 3.7 (Worker)',
+        title,
+        status: 'running',
+        payload: toolArgs,
+        delta: `调用 ${toolName}`,
+        timestamp,
+      }
+      ctx.events.push(event)
+      ctx.toolCallEventMap.set(toolCallId, event)
+      ctx.idAliasMap.set(msgId, toolCallId)
+      stepParentId = toolCallId
+      ctx.lastEventId = toolCallId
+    }
+  }
+}
+
+/**
+ * 处理 Pi 工具执行返回 (toolResult)
+ */
+function handlePiToolResult(
+  record: Record<string, unknown>,
+  msg: Record<string, unknown>,
+  ctx: ParserContext
+): void {
+  const toolCallId = String(record.toolCallId || msg.toolCallId || '')
+  const isError = Boolean(record.isError ?? msg.isError)
+  const toolContent = msg.content ?? record.content
+  const outputLines = normalizeObservationOutput(toolContent)
+  const exitCode = isError ? 1 : 0
+
+  const targetEvent = ctx.toolCallEventMap.get(toolCallId)
+  if (targetEvent) {
+    targetEvent.status = isError ? 'failed' : 'completed'
+    targetEvent.isCorrectionBranch = isError
+    targetEvent.observation = {
+      exitCode,
+      output: outputLines,
+      command: (targetEvent.payload?.command as string) || undefined,
+    }
+    if (outputLines.length > 0) {
+      targetEvent.delta = outputLines.slice(0, 3).join('\n')
+    }
+    if (typeof record.id === 'string') {
+      ctx.idAliasMap.set(record.id, targetEvent.nodeId)
+    }
+    ctx.lastEventId = targetEvent.nodeId
+  }
+}
+
+/**
+ * 处理 Pi 协议消息分发
+ */
+function handlePiMessage(record: Record<string, unknown>, ctx: ParserContext): boolean {
+  if (record.type !== 'message' || !record.message || typeof record.message !== 'object') {
+    return false
+  }
+
+  ctx.isPiSession = true
+  ctx.session.format = 'pi'
+  const msg = record.message as Record<string, unknown>
+  const role = String(msg.role || '')
+  const msgId = typeof record.id === 'string' ? record.id : `msg-${++ctx.turnCounter}`
+  const rawParentMsgId = typeof record.parentId === 'string' ? record.parentId : ctx.lastEventId
+  const parentMsgId = (rawParentMsgId && ctx.idAliasMap.get(rawParentMsgId)) || rawParentMsgId
+
+  if (role === 'user') {
+    handlePiUserMessage(record, msg, msgId, parentMsgId, ctx)
+    return true
+  }
+
+  if (role === 'assistant') {
+    handlePiAssistantMessage(record, msg, msgId, parentMsgId, ctx)
+    return true
+  }
+
+  if (role === 'toolResult') {
+    handlePiToolResult(record, msg, ctx)
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 处理 Claude Code 用户轮次（包含 tool_result 回包或需求输入）
+ */
+function handleClaudeUserMessage(
+  record: Record<string, unknown>,
+  msg: Record<string, unknown>,
+  uuid: string,
+  parentUuid: string | undefined,
+  ctx: ParserContext
+): void {
+  if (!Array.isArray(msg.content)) return
+
+  const toolResultBlock = msg.content.find(
+    (b) => b && typeof b === 'object' && (b as Record<string, unknown>).type === 'tool_result'
+  ) as Record<string, unknown> | undefined
+
+  if (toolResultBlock) {
+    const toolCallId = String(toolResultBlock.tool_use_id || '')
+    const isError = Boolean(toolResultBlock.is_error)
+    const outputLines = normalizeObservationOutput(toolResultBlock.content)
+    const exitCode = isError ? 1 : 0
+
+    const targetEvent = ctx.toolCallEventMap.get(toolCallId)
+    if (targetEvent) {
+      targetEvent.status = isError ? 'failed' : 'completed'
+      targetEvent.isCorrectionBranch = isError
+      targetEvent.observation = {
+        exitCode,
+        output: outputLines,
+        command: (targetEvent.payload?.command as string) || undefined,
+      }
+      if (outputLines.length > 0) {
+        targetEvent.delta = outputLines.slice(0, 3).join('\n')
+      }
+      ctx.idAliasMap.set(uuid, targetEvent.nodeId)
+      ctx.lastEventId = targetEvent.nodeId
+    }
+    return
+  }
+
+  // 普通用户需求指令
+  ctx.turnCounter++
+  const userText = extractTextContent(msg.content)
+  const event: TelemetryEvent = {
+    traceId: ctx.session.id,
+    nodeId: uuid,
+    parentId: parentUuid,
+    type: 'node_complete',
+    gesture: 'read',
+    actor: 'Human Operator',
+    title: '用户需求指令',
+    status: 'completed',
+    delta: userText,
+    timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
+  }
+  ctx.events.push(event)
+  ctx.idAliasMap.set(uuid, uuid)
+  ctx.lastEventId = uuid
+}
+
+/**
+ * 处理 Claude Code 助手回复与工具调用
+ */
+function handleClaudeAssistantMessage(
+  record: Record<string, unknown>,
+  msg: Record<string, unknown>,
+  uuid: string,
+  parentUuid: string | undefined,
+  ctx: ParserContext
+): void {
+  if (!Array.isArray(msg.content)) return
+
+  ctx.turnCounter++
+  let stepParentId = parentUuid
+  const timestamp = typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now()
+
+  for (let i = 0; i < msg.content.length; i++) {
+    const block = msg.content[i]
+    if (!block || typeof block !== 'object') continue
+    const b = block as Record<string, unknown>
+
+    if (b.type === 'thinking' && typeof b.thinking === 'string') {
+      const thinkNodeId = `${uuid}-think-${i}`
+      const event: TelemetryEvent = {
+        traceId: ctx.session.id,
+        nodeId: thinkNodeId,
+        parentId: stepParentId,
+        type: 'node_complete',
+        gesture: 'think',
+        actor: 'Claude 3.7 (Worker)',
+        title: '内部推演与反思',
+        status: 'completed',
+        delta: b.thinking,
+        timestamp,
+      }
+      ctx.events.push(event)
+      ctx.idAliasMap.set(uuid, thinkNodeId)
+      stepParentId = thinkNodeId
+      ctx.lastEventId = thinkNodeId
+      continue
+    }
+
+    if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+      const textNodeId = `${uuid}-text-${i}`
+      const event: TelemetryEvent = {
+        traceId: ctx.session.id,
+        nodeId: textNodeId,
+        parentId: stepParentId,
+        type: 'node_complete',
+        gesture: 'think',
+        actor: 'Claude 3.7 (Worker)',
+        title: '模型执行分析',
+        status: 'completed',
+        delta: b.text,
+        timestamp,
+      }
+      ctx.events.push(event)
+      ctx.idAliasMap.set(uuid, textNodeId)
+      stepParentId = textNodeId
+      ctx.lastEventId = textNodeId
+      continue
+    }
+
+    if (b.type === 'tool_use') {
+      ctx.session.totalTools++
+      const toolName = String(b.name || 'tool')
+      const toolCallId = String(b.id || `${uuid}-tool-${i}`)
+      const toolArgs = (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown>
+      const gesture = mapToolNameToGesture(toolName)
+      const title = formatToolTitle(toolName, toolArgs)
+
+      const event: TelemetryEvent = {
+        traceId: ctx.session.id,
+        nodeId: toolCallId,
+        parentId: stepParentId,
+        type: 'node_complete',
+        gesture,
+        actor: 'Claude 3.7 (Worker)',
+        title,
+        status: 'running',
+        payload: toolArgs,
+        delta: `执行 ${toolName}`,
+        timestamp,
+      }
+      ctx.events.push(event)
+      ctx.toolCallEventMap.set(toolCallId, event)
+      ctx.idAliasMap.set(uuid, toolCallId)
+      stepParentId = toolCallId
+      ctx.lastEventId = toolCallId
+    }
+  }
+}
+
+/**
+ * 处理 Claude Code 协议消息分发
+ */
+function handleClaudeMessage(record: Record<string, unknown>, ctx: ParserContext): boolean {
+  if (record.type !== 'user' && record.type !== 'assistant') {
+    return false
+  }
+
+  ctx.isClaudeSession = true
+  ctx.session.format = 'claude'
+  const msg = record.message as Record<string, unknown> | undefined
+  if (!msg) return false
+
+  const uuid = typeof record.uuid === 'string' ? record.uuid : `cl-${++ctx.turnCounter}`
+  const rawParentUuid = typeof record.parentUuid === 'string' ? record.parentUuid : ctx.lastEventId
+  const parentUuid = (rawParentUuid && ctx.idAliasMap.get(rawParentUuid)) || rawParentUuid
+
+  if (record.type === 'user') {
+    handleClaudeUserMessage(record, msg, uuid, parentUuid, ctx)
+    return true
+  }
+
+  if (record.type === 'assistant') {
+    handleClaudeAssistantMessage(record, msg, uuid, parentUuid, ctx)
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 对单条已反序列化的会话 JSON 对象执行流式分发解析
+ */
+function processTranscriptRecord(record: Record<string, unknown>, ctx: ParserContext): void {
+  // 1. 先验探测：若本身已是 NetDive TelemetryEvent 单条记录
+  if (
+    typeof record.nodeId === 'string' &&
+    typeof record.type === 'string' &&
+    typeof record.traceId === 'string'
+  ) {
+    ctx.events.push(record as unknown as TelemetryEvent)
+    ctx.lastEventId = record.nodeId
+    return
+  }
+
+  // 2. Pi 会话及模型元数据
+  if (handlePiMetadata(record, ctx)) return
+
+  // 3. Claude Code 元数据
+  if (handleClaudeMetadata(record, ctx)) return
+
+  // 4. Pi 消息流
+  if (handlePiMessage(record, ctx)) return
+
+  // 5. Claude Code 消息流
+  if (handleClaudeMessage(record, ctx)) return
+}
+
+/**
+ * 终态收口：将所有仍处于 running 状态且未显式报错的工具调用标记为 completed
+ */
+function finalizeRunningEvents(events: TelemetryEvent[]): void {
+  for (const event of events) {
+    if (event.status === 'running') {
+      event.status = 'completed'
+      if (!event.observation) {
+        event.observation = { exitCode: 0, output: [] }
+      }
+    }
+  }
+}
+
+/**
+ * 核心转换函数 1：解析 Pi / Claude JSONL 文本为标准 TelemetryEvent[] 拓扑序列 (Shape By Example)
+ * 模块化拆解巨型过程式循环，消灭状态堆砌
+ *
+ * @example
+ * ```ts
+ * // [Input Shape - Raw JSONL]:
+ * // {"type":"session","id":"sess-pi-001","cwd":"/repo"}
+ * // {"type":"message","id":"msg-1","message":{"role":"user","content":"Run tests"}}
+ * // {"type":"message","id":"msg-2","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"bash","arguments":{"command":"pnpm test"}}]}}
+ *
+ * const { session, events } = parseTranscript(jsonlText)
+ *
+ * // [Output Shape - ParsedTranscript]:
+ * // session: { id: 'sess-pi-001', format: 'pi', totalTurns: 2, totalTools: 1, cwd: '/repo', cwdBase: 'repo' }
+ * // events: [
+ * //   { nodeId: 'msg-1', gesture: 'read', actor: 'Human Operator', title: '用户意图指令', delta: 'Run tests', status: 'completed' },
+ * //   { nodeId: 'call-1', parentId: 'msg-1', gesture: 'bash', title: '$ pnpm test', status: 'completed' }
+ * // ]
+ * ```
  */
 export function parseTranscript(jsonlText: string): ParsedTranscript {
   const lines = jsonlText.split(/\r?\n/)
 
-  const session: SessionMetadata = {
-    id: `session-${Date.now()}`,
-    totalTurns: 0,
-    totalTools: 0,
-    format: 'generic',
+  const ctx: ParserContext = {
+    session: {
+      id: `session-${Date.now()}`,
+      totalTurns: 0,
+      totalTools: 0,
+      format: 'generic',
+    },
+    events: [],
+    toolCallEventMap: new Map(),
+    idAliasMap: new Map(),
+    turnCounter: 0,
+    isPiSession: false,
+    isClaudeSession: false,
   }
-
-  const events: TelemetryEvent[] = []
-  const toolCallEventMap = new Map<string, TelemetryEvent>()
-  const idAliasMap = new Map<string, string>()
-
-  let lastEventId: string | undefined
-  let turnCounter = 0
-  let isPiSession = false
-  let isClaudeSession = false
 
   for (const rawLine of lines) {
     const line = rawLine.trim()
@@ -182,382 +681,16 @@ export function parseTranscript(jsonlText: string): ParsedTranscript {
       continue
     }
 
-    // 1. 先验探测：若本身已是 NetDive TelemetryEvent 单条记录
-    if (
-      typeof record.nodeId === 'string' &&
-      typeof record.type === 'string' &&
-      typeof record.traceId === 'string'
-    ) {
-      events.push(record as unknown as TelemetryEvent)
-      lastEventId = record.nodeId
-      continue
-    }
-
-    // 2. Pi 格式：session 头部元数据
-    if (record.type === 'session') {
-      isPiSession = true
-      session.format = 'pi'
-      if (typeof record.id === 'string') session.id = record.id
-      if (typeof record.version === 'number' || typeof record.version === 'string') {
-        session.version = record.version
-      }
-      if (typeof record.timestamp === 'string') session.timestamp = record.timestamp
-      if (typeof record.cwd === 'string') {
-        session.cwd = record.cwd
-        session.cwdBase = basename(record.cwd)
-      }
-      continue
-    }
-
-    // 3. Pi 格式：model_change 记录
-    if (record.type === 'model_change') {
-      isPiSession = true
-      session.format = 'pi'
-      if (typeof record.provider === 'string') session.provider = record.provider
-      if (typeof record.modelId === 'string') session.modelId = record.modelId
-      continue
-    }
-
-    // 4. Claude Code 格式元数据：last-prompt / attachment
-    if (record.type === 'last-prompt' && typeof record.sessionId === 'string') {
-      isClaudeSession = true
-      session.format = 'claude'
-      session.id = record.sessionId
-      session.sessionId = record.sessionId
-      continue
-    }
-
-    if (record.type === 'attachment') {
-      isClaudeSession = true
-      session.format = 'claude'
-      if (typeof record.sessionId === 'string') session.sessionId = record.sessionId
-      if (typeof record.cwd === 'string') {
-        session.cwd = record.cwd
-        session.cwdBase = basename(record.cwd)
-      }
-      if (typeof record.gitBranch === 'string') session.gitBranch = record.gitBranch
-      if (typeof record.version === 'string') session.version = record.version
-      continue
-    }
-
-    // 5. Pi 消息格式：{"type":"message", "id":"...", "parentId":"...", "message":{...}}
-    if (record.type === 'message' && record.message && typeof record.message === 'object') {
-      isPiSession = true
-      session.format = 'pi'
-      const msg = record.message as Record<string, unknown>
-      const role = String(msg.role || '')
-      const msgId = typeof record.id === 'string' ? record.id : `msg-${++turnCounter}`
-      const rawParentMsgId = typeof record.parentId === 'string' ? record.parentId : lastEventId
-      const parentMsgId = (rawParentMsgId && idAliasMap.get(rawParentMsgId)) || rawParentMsgId
-
-      // 5.1 用户输入 (User Turn)
-      if (role === 'user') {
-        turnCounter++
-        const userText = extractTextContent(msg.content)
-        const event: TelemetryEvent = {
-          traceId: session.id,
-          nodeId: msgId,
-          parentId: parentMsgId,
-          type: 'node_complete',
-          gesture: 'read',
-          actor: 'Human Operator',
-          title: '用户意图指令',
-          status: 'completed',
-          delta: userText,
-          timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-        }
-        events.push(event)
-        idAliasMap.set(msgId, msgId)
-        lastEventId = msgId
-        continue
-      }
-
-      // 5.2 助手回复 / 思考 / 工具调用 (Assistant Turn)
-      if (role === 'assistant') {
-        turnCounter++
-        const content = msg.content
-
-        if (Array.isArray(content)) {
-          let stepParentId = parentMsgId
-
-          for (let i = 0; i < content.length; i++) {
-            const block = content[i]
-            if (!block || typeof block !== 'object') continue
-            const b = block as Record<string, unknown>
-
-            // 思考块
-            if (b.type === 'thinking' && typeof b.thinking === 'string') {
-              const thinkNodeId = `${msgId}-think-${i}`
-              const event: TelemetryEvent = {
-                traceId: session.id,
-                nodeId: thinkNodeId,
-                parentId: stepParentId,
-                type: 'node_complete',
-                gesture: 'think',
-                actor: (session.modelId || 'Pi (Coordinator)') as TelemetryActor,
-                title: '目标规划与分解',
-                status: 'completed',
-                delta: b.thinking,
-                timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-              }
-              events.push(event)
-              idAliasMap.set(msgId, thinkNodeId)
-              stepParentId = thinkNodeId
-              lastEventId = thinkNodeId
-              continue
-            }
-
-            // 文本输出块
-            if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-              const textNodeId = `${msgId}-text-${i}`
-              const event: TelemetryEvent = {
-                traceId: session.id,
-                nodeId: textNodeId,
-                parentId: stepParentId,
-                type: 'node_complete',
-                gesture: 'think',
-                actor: (session.modelId || 'Pi (Coordinator)') as TelemetryActor,
-                title: '决策输出与复盘',
-                status: 'completed',
-                delta: b.text,
-                timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-              }
-              events.push(event)
-              idAliasMap.set(msgId, textNodeId)
-              stepParentId = textNodeId
-              lastEventId = textNodeId
-              continue
-            }
-
-            // 工具调用块
-            if (b.type === 'toolCall') {
-              session.totalTools++
-              const toolName = String(b.name || 'tool')
-              const toolCallId = String(b.id || `${msgId}-tool-${i}`)
-              const toolArgs = (b.arguments && typeof b.arguments === 'object' ? b.arguments : {}) as Record<string, unknown>
-              const gesture = mapToolNameToGesture(toolName)
-              const title = formatToolTitle(toolName, toolArgs)
-
-              const event: TelemetryEvent = {
-                traceId: session.id,
-                nodeId: toolCallId,
-                parentId: stepParentId,
-                type: 'node_complete',
-                gesture,
-                actor: 'Claude 3.7 (Worker)',
-                title,
-                status: 'running',
-                payload: toolArgs,
-                delta: `调用 ${toolName}`,
-                timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-              }
-              events.push(event)
-              toolCallEventMap.set(toolCallId, event)
-              idAliasMap.set(msgId, toolCallId)
-              stepParentId = toolCallId
-              lastEventId = toolCallId
-              continue
-            }
-          }
-        }
-        continue
-      }
-
-      // 5.3 工具执行返回 (Tool Result Turn)
-      if (role === 'toolResult') {
-        const toolCallId = String(record.toolCallId || msg.toolCallId || '')
-        const isError = Boolean(record.isError ?? msg.isError)
-        const toolContent = msg.content ?? record.content
-        const outputLines = normalizeObservationOutput(toolContent)
-        const exitCode = isError ? 1 : 0
-
-        const targetEvent = toolCallEventMap.get(toolCallId)
-        if (targetEvent) {
-          targetEvent.status = isError ? 'failed' : 'completed'
-          targetEvent.isCorrectionBranch = isError
-          targetEvent.observation = {
-            exitCode,
-            output: outputLines,
-            command: (targetEvent.payload?.command as string) || undefined,
-          }
-          if (outputLines.length > 0) {
-            targetEvent.delta = outputLines.slice(0, 3).join('\n')
-          }
-          if (typeof record.id === 'string') {
-            idAliasMap.set(record.id, targetEvent.nodeId)
-          }
-          lastEventId = targetEvent.nodeId
-        }
-        continue
-      }
-    }
-
-    // 6. Claude Code 消息格式：{"type":"user"|"assistant", "uuid":"...", "message":{...}}
-    if (record.type === 'user' || record.type === 'assistant') {
-      isClaudeSession = true
-      session.format = 'claude'
-      const msg = record.message as Record<string, unknown> | undefined
-      if (!msg) continue
-
-      const uuid = typeof record.uuid === 'string' ? record.uuid : `cl-${++turnCounter}`
-      const rawParentUuid = typeof record.parentUuid === 'string' ? record.parentUuid : lastEventId
-      const parentUuid = (rawParentUuid && idAliasMap.get(rawParentUuid)) || rawParentUuid
-
-      // 6.1 Claude 工具执行返回：role === 'user' 且 content 中含有 tool_result
-      if (record.type === 'user' && Array.isArray(msg.content)) {
-        const toolResultBlock = msg.content.find(
-          (b) => b && typeof b === 'object' && (b as Record<string, unknown>).type === 'tool_result'
-        ) as Record<string, unknown> | undefined
-
-        if (toolResultBlock) {
-          const toolCallId = String(toolResultBlock.tool_use_id || '')
-          const isError = Boolean(toolResultBlock.is_error)
-          const outputLines = normalizeObservationOutput(toolResultBlock.content)
-          const exitCode = isError ? 1 : 0
-
-          const targetEvent = toolCallEventMap.get(toolCallId)
-          if (targetEvent) {
-            targetEvent.status = isError ? 'failed' : 'completed'
-            targetEvent.isCorrectionBranch = isError
-            targetEvent.observation = {
-              exitCode,
-              output: outputLines,
-              command: (targetEvent.payload?.command as string) || undefined,
-            }
-            if (outputLines.length > 0) {
-              targetEvent.delta = outputLines.slice(0, 3).join('\n')
-            }
-            idAliasMap.set(uuid, targetEvent.nodeId)
-            lastEventId = targetEvent.nodeId
-          }
-          continue
-        }
-
-        // 普通用户提示词
-        turnCounter++
-        const userText = extractTextContent(msg.content)
-        const event: TelemetryEvent = {
-          traceId: session.id,
-          nodeId: uuid,
-          parentId: parentUuid,
-          type: 'node_complete',
-          gesture: 'read',
-          actor: 'Human Operator',
-          title: '用户需求指令',
-          status: 'completed',
-          delta: userText,
-          timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-        }
-        events.push(event)
-        idAliasMap.set(uuid, uuid)
-        lastEventId = uuid
-        continue
-      }
-
-      // 6.2 Claude 助手回复与工具调用
-      if (record.type === 'assistant' && Array.isArray(msg.content)) {
-        turnCounter++
-        let stepParentId = parentUuid
-
-        for (let i = 0; i < msg.content.length; i++) {
-          const block = msg.content[i]
-          if (!block || typeof block !== 'object') continue
-          const b = block as Record<string, unknown>
-
-          // 思考块
-          if (b.type === 'thinking' && typeof b.thinking === 'string') {
-            const thinkNodeId = `${uuid}-think-${i}`
-            const event: TelemetryEvent = {
-              traceId: session.id,
-              nodeId: thinkNodeId,
-              parentId: stepParentId,
-              type: 'node_complete',
-              gesture: 'think',
-              actor: 'Claude 3.7 (Worker)',
-              title: '内部推演与反思',
-              status: 'completed',
-              delta: b.thinking,
-              timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-            }
-            events.push(event)
-            idAliasMap.set(uuid, thinkNodeId)
-            stepParentId = thinkNodeId
-            lastEventId = thinkNodeId
-            continue
-          }
-
-          // 文本块
-          if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-            const textNodeId = `${uuid}-text-${i}`
-            const event: TelemetryEvent = {
-              traceId: session.id,
-              nodeId: textNodeId,
-              parentId: stepParentId,
-              type: 'node_complete',
-              gesture: 'think',
-              actor: 'Claude 3.7 (Worker)',
-              title: '模型执行分析',
-              status: 'completed',
-              delta: b.text,
-              timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-            }
-            events.push(event)
-            idAliasMap.set(uuid, textNodeId)
-            stepParentId = textNodeId
-            lastEventId = textNodeId
-            continue
-          }
-
-          // Claude tool_use 块
-          if (b.type === 'tool_use') {
-            session.totalTools++
-            const toolName = String(b.name || 'tool')
-            const toolCallId = String(b.id || `${uuid}-tool-${i}`)
-            const toolArgs = (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown>
-            const gesture = mapToolNameToGesture(toolName)
-            const title = formatToolTitle(toolName, toolArgs)
-
-            const event: TelemetryEvent = {
-              traceId: session.id,
-              nodeId: toolCallId,
-              parentId: stepParentId,
-              type: 'node_complete',
-              gesture,
-              actor: 'Claude 3.7 (Worker)',
-              title,
-              status: 'running',
-              payload: toolArgs,
-              delta: `执行 ${toolName}`,
-              timestamp: typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now(),
-            }
-            events.push(event)
-            toolCallEventMap.set(toolCallId, event)
-            idAliasMap.set(uuid, toolCallId)
-            stepParentId = toolCallId
-            lastEventId = toolCallId
-            continue
-          }
-        }
-        continue
-      }
-    }
+    processTranscriptRecord(record, ctx)
   }
 
-  // 终态兜底：若有仍处于 running 状态且未显式报错的 tool_use，标为 completed
-  for (const event of events) {
-    if (event.status === 'running') {
-      event.status = 'completed'
-      if (!event.observation) {
-        event.observation = { exitCode: 0, output: [] }
-      }
-    }
-  }
+  finalizeRunningEvents(ctx.events)
 
-  session.totalTurns = turnCounter || events.length
-  if (isPiSession) session.format = 'pi'
-  else if (isClaudeSession) session.format = 'claude'
+  ctx.session.totalTurns = ctx.turnCounter || ctx.events.length
+  if (ctx.isPiSession) ctx.session.format = 'pi'
+  else if (ctx.isClaudeSession) ctx.session.format = 'claude'
 
-  return { session, events }
+  return { session: ctx.session, events: ctx.events }
 }
 
 /**
@@ -678,11 +811,36 @@ export interface AggregateOptions {
 }
 
 /**
- * 核心：智能聚合连续同构工具调用
+ * 核心转换函数 2：智能聚合连续同构工具调用 (Shape By Example)
  * - 将同手势、同目标的连续成功工具调用折叠为一个带有 (xN) 标记与聚合详情的主节点
  * - 绝对不折叠任何 exitCode !== 0 或 status === 'failed' 的单测/异常自愈节点
  * - 当 options.enabled 为 false 时，精确无损保留原始展开序列
  * - 自动重写后续节点的 parentId，确保因果 DAG 连接完整无断链
+ *
+ * @example
+ * ```ts
+ * // [Input Shape - Expanded TelemetryEvent[]]:
+ * // [
+ * //   { nodeId: 'read-1', gesture: 'read', payload: { path: 'src/app.ts' }, status: 'completed' },
+ * //   { nodeId: 'read-2', parentId: 'read-1', gesture: 'read', payload: { path: 'src/app.ts' }, status: 'completed' },
+ * //   { nodeId: 'read-3', parentId: 'read-2', gesture: 'read', payload: { path: 'src/app.ts' }, status: 'completed' }
+ * // ]
+ *
+ * const aggregated = aggregateConsecutiveToolEvents(events, { enabled: true })
+ *
+ * // [Output Shape - Folded TelemetryEvent[]]:
+ * // [
+ * //   {
+ * //     nodeId: 'read-1',
+ * //     gesture: 'read',
+ * //     title: 'read: app.ts (x3)',
+ * //     isAggregated: true,
+ * //     aggregateCount: 3,
+ * //     payload: { isAggregated: true, aggregateCount: 3, subCalls: [...] },
+ * //     observation: { exitCode: 0, aggregatedCount: 3, output: [...] }
+ * //   }
+ * // ]
+ * ```
  */
 export function aggregateConsecutiveToolEvents(
   events: TelemetryEvent[],
@@ -798,8 +956,28 @@ export function aggregateConsecutiveToolEvents(
 }
 
 /**
- * 将解析出的 TelemetryEvent[] 序列计算为 React Flow 所需的 Node[] 与 Edge[]
+ * 核心转换函数 3：将 TelemetryEvent[] 序列计算为 React Flow 所需的 Node[] 与 Edge[] (Shape By Example)
  * 自动根据单向因果主干与自愈分叉计算水平布局与琥珀金分支线
+ *
+ * @example
+ * ```ts
+ * // [Input Shape - TelemetryEvent[]]:
+ * // [
+ * //   { nodeId: 'node-1', gesture: 'think', title: '目标规划', status: 'completed' },
+ * //   { nodeId: 'node-2', parentId: 'node-1', gesture: 'bash', title: 'pnpm test', status: 'failed', isCorrectionBranch: true }
+ * // ]
+ *
+ * const { nodes, edges } = eventsToFlowNodesAndEdges(events)
+ *
+ * // [Output Shape - React Flow Graph]:
+ * // nodes: [
+ * //   { id: 'node-1', type: 'agentNode', position: { x: 50, y: 180 }, data: { title: '目标规划', gesture: 'think', ... } },
+ * //   { id: 'node-2', type: 'agentNode', position: { x: 330, y: 340 }, data: { title: 'pnpm test', isCorrectionBranch: true, ... } }
+ * // ]
+ * // edges: [
+ * //   { id: 'e-node-1-node-2', source: 'node-1', target: 'node-2', type: 'smoothstep', animated: true, style: { stroke: '#D97706', ... } }
+ * // ]
+ * ```
  */
 export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
   nodes: Node[]
@@ -856,9 +1034,7 @@ export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
         nodeSummary = JSON.stringify(ev.payload)
       }
     } else if (ev.observation?.output) {
-      const outputLines = Array.isArray(ev.observation.output)
-        ? ev.observation.output
-        : [String(ev.observation.output)]
+      const outputLines = normalizeObservationOutput(ev.observation.output)
       nodeSummary = outputLines.slice(0, 3).join('\n')
     }
 

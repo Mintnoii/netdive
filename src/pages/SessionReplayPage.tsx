@@ -37,7 +37,7 @@ import {
 } from '../services/transcriptParser'
 import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from '../services/sampleTranscript'
 import type { TelemetryEvent } from '../types/telemetry'
-import { formatNodeSummary } from '../types/telemetry'
+import { formatNodeSummary, normalizeObservationOutput } from '../types/telemetry'
 
 const nodeTypes = {
   agentNode: AgentNode,
@@ -713,15 +713,11 @@ const SessionReplayContent: React.FC = () => {
                             <div className="space-y-1">
                               <div className="text-[10px] font-mono text-[#8F887D]">观测输出 (Observation):</div>
                               <div className="p-2 bg-[#1E2024] text-[#FBF9F5] rounded font-mono text-[10px] max-h-28 overflow-y-auto space-y-0.5 select-all">
-                                {Array.isArray(sub.observation.output) ? (
-                                  sub.observation.output.map((line, lIdx) => (
-                                    <div key={lIdx} className="leading-tight">
-                                      {line}
-                                    </div>
-                                  ))
-                                ) : (
-                                  <div>{String(sub.observation.output || '')}</div>
-                                )}
+                                {normalizeObservationOutput(sub.observation.output).map((line, lIdx) => (
+                                  <div key={lIdx} className="leading-tight">
+                                    {line}
+                                  </div>
+                                ))}
                               </div>
                             </div>
                           )}
@@ -778,15 +774,11 @@ const SessionReplayContent: React.FC = () => {
                     )}
                   </div>
                   <div className="p-3 bg-[#1E2024] text-[#FBF9F5] rounded-lg font-mono text-[11px] max-h-56 overflow-y-auto space-y-1">
-                    {Array.isArray(activeEvent.observation.output) ? (
-                      activeEvent.observation.output.map((line, idx) => (
-                        <div key={idx} className="leading-tight">
-                          {line}
-                        </div>
-                      ))
-                    ) : (
-                      <div>{String(activeEvent.observation.output || '')}</div>
-                    )}
+                    {normalizeObservationOutput(activeEvent.observation.output).map((line, idx) => (
+                      <div key={idx} className="leading-tight">
+                        {line}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
