@@ -18,6 +18,8 @@ import type {
 } from '../types/telemetry'
 import { BASE_CONTEXT_WATERMARK, formatTokens } from '../types/telemetry'
 import { gateManager } from '../services/gateManager'
+import { assertionEngine } from '../services/assertionEngine'
+export { assertionEngine } from '../services/assertionEngine'
 import {
   useBridgeConnection,
 } from './useBridgeConnection'
@@ -551,6 +553,12 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   const processEvent = useCallback((event: TelemetryEvent) => {
     switch (event.type) {
       case 'node_start': {
+        const assertion = event.assertion || assertionEngine.evaluate(event)
+        let initialStatus = event.status || 'running'
+        if (assertion.triggerGate && initialStatus !== 'rejected') {
+          initialStatus = 'gate'
+        }
+
         setNodes((prevNodes) => {
           // 若节点已存在则跳过新建，防止重复
           if (prevNodes.some((n) => n.id === event.nodeId)) return prevNodes
@@ -575,11 +583,12 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
               title: event.title || '任务节点',
               actor: event.actor || 'Pi (Coordinator)',
               gesture: event.gesture || 'think',
-              status: event.status || 'running',
+              status: initialStatus,
               summary: event.delta || '',
               isCorrectionBranch: event.isCorrectionBranch,
               observation: event.observation,
               payload: event.payload,
+              assertion,
             } satisfies AgentNodeData,
           }
 
@@ -643,6 +652,16 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       }
 
       case 'node_complete': {
+        // Tool execution observations are asserted through assertionEngine before deciding node status and topology branching
+        const assertion = event.assertion || assertionEngine.evaluate(event)
+
+        let targetStatus: TelemetryStatus = event.status || 'completed'
+        if (assertion.triggerGate && targetStatus !== 'rejected') {
+          targetStatus = 'gate'
+        } else if (assertion.triggerSelfCorrection && targetStatus !== 'gate') {
+          targetStatus = 'failed'
+        }
+
         setNodes((prevNodes) =>
           prevNodes.map((node) => {
             if (node.id !== event.nodeId) return node
@@ -651,7 +670,8 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
               ...node,
               data: {
                 ...currentData,
-                status: event.status || 'completed',
+                status: targetStatus,
+                assertion,
                 summary: event.delta
                   ? (currentData.summary || '') + event.delta
                   : currentData.summary,
@@ -665,7 +685,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
         )
 
         // 节点收敛完成：停止动画；失败节点 (status === 'failed') 的边用红色警示
-        const isFailed = event.status === 'failed'
+        const isFailed = targetStatus === 'failed'
         setEdges((prevEdges) =>
           prevEdges.map((edge) => {
             if (edge.target === event.nodeId) {
@@ -879,6 +899,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       resolve()
     }
     gateManager.clear('Stream reset')
+    assertionEngine.reset()
     setCurrentPendingGate(null)
     setIsPlaying(false)
     setIsPruned(false)
@@ -982,6 +1003,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
         resolve()
       }
       gateManager.clear('New stream started')
+      assertionEngine.reset()
       setCurrentPendingGate(null)
       setIsPlaying(true)
       setIsPruned(false)
@@ -1057,7 +1079,37 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
         setWatermark(currentWatermark)
 
         // 3. 节点收尾或进入决策门禁挂起
-        if (item.isGate) {
+        // Tool execution observations are asserted through assertionEngine before deciding node status and topology branching
+        const commandToCheck =
+          item.gatePayload?.proposedAction?.command ||
+          (item.gesture === 'bash' ? item.title : undefined)
+
+        const assertion = assertionEngine.evaluate({
+          gesture: item.gesture,
+          observation: item.observation,
+          command: commandToCheck,
+          title: item.title,
+          status: item.status,
+          payload: item.gatePayload ? { proposedAction: item.gatePayload.proposedAction } : undefined,
+        })
+
+        // Rule 2 (Fatal Failure Resonance) 或 Rule 3 (高危命令模式) 或显式 isGate 触发门禁拦截
+        const requiresGate = Boolean(item.isGate || assertion.triggerGate)
+
+        if (requiresGate) {
+          const payload: GatePromptPayload = item.gatePayload || {
+            gateId: `gate-${item.nodeId}`,
+            title: assertion.reason?.includes('Fatal Failure Resonance')
+              ? '致命共振紧急门禁拦截 (Fatal Failure Resonance)'
+              : item.title || '决策门禁待审 (HITL)',
+            riskLevel: assertion.severity === 'critical' ? 'critical' : 'high',
+            proposedAction: {
+              command: commandToCheck || item.title || 'emergency_stop',
+              explanation: assertion.reason || item.fullSummary,
+            },
+            timestamp: new Date().toISOString(),
+          }
+
           processEvent({
             traceId,
             nodeId: item.nodeId,
@@ -1066,19 +1118,10 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             actor: item.actor,
             isCorrectionBranch: item.isCorrectionBranch,
             observation: item.observation,
+            assertion,
+            gatePayload: payload,
             watermark: currentWatermark,
           })
-
-          const payload: GatePromptPayload = item.gatePayload || {
-            gateId: `gate-${item.nodeId}`,
-            title: item.title,
-            riskLevel: 'high',
-            proposedAction: {
-              command: 'git commit -m "feat(pipeline): verified changes"',
-              explanation: item.fullSummary,
-            },
-            timestamp: new Date().toISOString(),
-          }
 
           // 触发模态窗并挂起 Promise 协程
           setCurrentPendingGate(payload)
@@ -1107,6 +1150,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             gesture: item.gesture,
             actor: item.actor,
             gateDecision: decision,
+            assertion,
             isCorrectionBranch: item.isCorrectionBranch,
           })
 
@@ -1118,13 +1162,19 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             return
           }
         } else {
+          // Rule 1: 非零 Exit Code -> 触发立即自愈分叉 (Self-Correction Branching)
+          const finalStatus: TelemetryStatus = assertion.triggerSelfCorrection
+            ? 'failed'
+            : item.status || 'completed'
+
           processEvent({
             traceId,
             nodeId: item.nodeId,
             type: 'node_complete',
             gesture: item.gesture,
             actor: item.actor,
-            status: item.status || 'completed',
+            status: finalStatus,
+            assertion,
             isCorrectionBranch: item.isCorrectionBranch,
             observation: item.observation,
             watermark: currentWatermark,
@@ -1267,5 +1317,6 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     pruneContext,
     resetWatermark,
     prunableItems,
+    assertionEngine,
   }
 }

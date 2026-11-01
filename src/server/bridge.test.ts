@@ -239,6 +239,135 @@ describe('NetDive Hono Bridge Server & Gate HITL Integration', () => {
 
     ws.close()
   })
+
+  it('L1 Assertion: POST /api/telemetry with exitCode !== 0 asserts Self-Correction branching and marks failed status', async () => {
+    const ws = new WebSocket(`ws://${TEST_HOST}:${TEST_PORT}/ws`)
+    const wsEvents: unknown[] = []
+    ws.on('message', (raw) => wsEvents.push(JSON.parse(raw.toString())))
+
+    await new Promise<void>((resolve) => ws.on('open', () => resolve()))
+
+    const testEvent: TelemetryEvent = {
+      traceId: 'trace-assert-1',
+      nodeId: `node-err-${Date.now()}`,
+      type: 'node_complete',
+      gesture: 'bash',
+      title: 'Run test suite',
+      observation: {
+        exitCode: 1,
+        output: ['AssertionError: Expected 200, got 500'],
+      },
+    }
+
+    const res = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/telemetry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(testEvent),
+    })
+
+    assert.equal(res.status, 200)
+    const data = await res.json()
+    assert.equal(data.ok, true)
+    assert.ok(data.assertion)
+    assert.equal(data.assertion.passed, false)
+    assert.equal(data.assertion.triggerSelfCorrection, true)
+    assert.equal(data.assertion.triggerGate, false)
+    assert.equal(data.assertion.severity, 'warn')
+
+    await new Promise((r) => setTimeout(r, 80))
+    const wsReceived = wsEvents.find(
+      (m) => (m as TelemetryEvent).nodeId === testEvent.nodeId
+    ) as TelemetryEvent
+    assert.ok(wsReceived)
+    assert.equal(wsReceived.status, 'failed')
+    assert.equal(wsReceived.assertion?.triggerSelfCorrection, true)
+
+    ws.close()
+  })
+
+  it('L1 Assertion: POST /api/telemetry with high-risk command triggers Human Gate and registers pending gate', async () => {
+    const highRiskNodeId = `node-risk-${Date.now()}`
+    const highRiskEvent: TelemetryEvent = {
+      traceId: 'trace-risk-1',
+      nodeId: highRiskNodeId,
+      type: 'node_complete',
+      gesture: 'bash',
+      title: 'git commit -m "chore: critical commit"',
+      payload: {
+        command: 'git commit -m "chore: critical commit"',
+      },
+    }
+
+    const res = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/telemetry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(highRiskEvent),
+    })
+
+    assert.equal(res.status, 200)
+    const data = await res.json()
+    assert.equal(data.ok, true)
+    assert.ok(data.assertion)
+    assert.equal(data.assertion.triggerGate, true)
+    assert.equal(data.assertion.severity, 'critical')
+    assert.equal(data.assertion.rule, 'high_risk_gate')
+
+    // Verify gate was registered in gateManager
+    const pendingRes = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/gate/pending`)
+    const pendingData = await pendingRes.json()
+    const foundGate = pendingData.pendingGates.find(
+      (g: { gateId: string }) => g.gateId === `gate-${highRiskNodeId}`
+    )
+    assert.ok(foundGate)
+  })
+
+  it('L1 Assertion: Repetitive failure >= 2 times via Bridge triggers Fatal Failure Resonance and emergency gate', async () => {
+    const { assertionEngine } = await import('../services/assertionEngine')
+    assertionEngine.reset()
+
+    const failNodeId = `node-repeat-${Date.now()}`
+    const repeatEvent: TelemetryEvent = {
+      traceId: 'trace-repeat',
+      nodeId: failNodeId,
+      type: 'node_complete',
+      gesture: 'bash',
+      title: 'pnpm test:strict',
+      observation: {
+        exitCode: 1,
+        output: ['StrictAssertionError: Loop resonance detected'],
+      },
+    }
+
+    // Attempt 1: triggers self-correction
+    const res1 = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/telemetry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(repeatEvent),
+    })
+    const data1 = await res1.json()
+    assert.equal(data1.assertion.triggerSelfCorrection, true)
+    assert.equal(data1.assertion.triggerGate, false)
+
+    // Attempt 2: triggers Fatal Failure Resonance emergency gate!
+    const res2 = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/telemetry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(repeatEvent),
+    })
+    const data2 = await res2.json()
+    assert.equal(data2.assertion.triggerGate, true)
+    assert.equal(data2.assertion.triggerSelfCorrection, false)
+    assert.equal(data2.assertion.severity, 'critical')
+    assert.match(data2.assertion.reason, /Fatal Failure Resonance/i)
+
+    // Verify emergency gate was registered
+    const pendingRes = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/gate/pending`)
+    const pendingData = await pendingRes.json()
+    const foundResonanceGate = pendingData.pendingGates.find(
+      (g: { gateId: string }) => g.gateId === `gate-${failNodeId}`
+    )
+    assert.ok(foundResonanceGate)
+  })
 })
 
 describe('Context Watermark & Token Utilities', () => {
@@ -616,6 +745,15 @@ describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
     const { AgentNode } = await import('../components/AgentNode')
     assert.equal(typeof AgentNode, 'function')
   })
+
+  it('useTelemetryStream exports assertionEngine instance', async () => {
+    const { assertionEngine: hookEngine } = await import('../hooks/useTelemetryStream')
+    assert.ok(hookEngine)
+    assert.equal(typeof hookEngine.evaluate, 'function')
+    assert.equal(typeof hookEngine.reset, 'function')
+  })
 })
+
+
 
 

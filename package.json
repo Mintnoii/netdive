@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "tsx --test src/server/bridge.test.ts",
+    "test": "tsx --test src/server/bridge.test.ts src/services/assertionEngine.test.ts",
     "preview": "vite preview",
     "server": "tsx src/server/index.ts"
   },

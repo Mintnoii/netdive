@@ -18,6 +18,7 @@ import type {
   TelemetryGesture,
   TelemetryObservation,
   TelemetryStatus,
+  AssertionResult,
 } from '../types/telemetry'
 import { formatTokens } from '../types/telemetry'
 
@@ -30,6 +31,7 @@ export interface AgentNodeData {
   summary?: string
   isCorrectionBranch?: boolean
   observation?: TelemetryObservation
+  assertion?: AssertionResult
   humanSteering?: string
   pruned?: boolean
   payload?: Record<string, unknown>

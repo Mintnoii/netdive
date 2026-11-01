@@ -9,16 +9,19 @@ import type {
   TelemetryEvent,
 } from '../types/telemetry'
 import { GateManager } from '../services/gateManager'
+import { AssertionEngine, assertionEngine as defaultAssertionEngine } from '../services/assertionEngine'
 
 export interface BridgeServerOptions {
   port?: number
   host?: string
   gateManager?: GateManager
+  assertionEngine?: AssertionEngine
 }
 
 export interface BridgeAppInstance {
   app: Hono
   gateManager: GateManager
+  assertionEngine: AssertionEngine
   nodeWs: NodeWebSocket
   broadcast: (data: TelemetryEvent | Record<string, unknown>) => number
 }
@@ -33,8 +36,12 @@ export interface RunningBridgeServer extends BridgeAppInstance {
 /**
  * 创建 NetDive 本地桥接服务应用实例 (Hono + WebSocket)
  */
-export function createBridgeApp(options: { gateManager?: GateManager } = {}): BridgeAppInstance {
+export function createBridgeApp(options: {
+  gateManager?: GateManager
+  assertionEngine?: AssertionEngine
+} = {}): BridgeAppInstance {
   const gateManager = options.gateManager || new GateManager()
+  const assertionEngine = options.assertionEngine || defaultAssertionEngine
   const app = new Hono()
 
   // 跨域支持 (允许 Vite Web UI 与外部本地 Agent 进程直连)
@@ -79,8 +86,48 @@ export function createBridgeApp(options: { gateManager?: GateManager } = {}): Br
         return c.json({ ok: false, error: 'Invalid telemetry event: nodeId and type are required' }, 400)
       }
 
+      // L1 确定性断言引擎判定 (L1 Deterministic Assertion)
+      const assertion = event.assertion || assertionEngine.evaluate(event)
+
+      // 在决定节点状态与拓扑分叉前进行断言介入
+      let finalStatus = event.status
+      let isCorrectionBranch = event.isCorrectionBranch
+      let eventType = event.type
+      let gatePayload = event.gatePayload
+
+      if (assertion.triggerGate && finalStatus !== 'rejected' && finalStatus !== 'completed') {
+        finalStatus = 'gate'
+        if (!gatePayload && eventType !== 'gate_resolved') {
+          const isResonance = Boolean(assertion.reason?.includes('Fatal Failure Resonance'))
+          gatePayload = {
+            gateId: `gate-${event.nodeId}`,
+            title: isResonance
+              ? '致命共振紧急门禁拦截 (Fatal Failure Resonance)'
+              : (event.title || '高危命令安全门禁审查 (HITL)'),
+            riskLevel: 'critical',
+            proposedAction: {
+              command:
+                (typeof event.payload?.command === 'string' ? event.payload.command : undefined) ||
+                event.title ||
+                'High-Risk / Resonance Action',
+              explanation: assertion.reason || 'L1 Assertion Engine 检测到需要人类决策门禁介入',
+            },
+            timestamp: new Date().toISOString(),
+          }
+          eventType = 'gate_prompt'
+          gateManager.registerGate(gatePayload)
+        }
+      } else if (assertion.triggerSelfCorrection && finalStatus !== 'gate' && finalStatus !== 'completed') {
+        finalStatus = 'failed'
+      }
+
       const normalizedEvent: TelemetryEvent = {
         ...event,
+        type: eventType,
+        status: finalStatus || event.status,
+        isCorrectionBranch,
+        assertion,
+        gatePayload,
         timestamp: event.timestamp || Date.now(),
       }
 
@@ -89,6 +136,7 @@ export function createBridgeApp(options: { gateManager?: GateManager } = {}): Br
         ok: true,
         deliveredClients: delivered,
         nodeId: normalizedEvent.nodeId,
+        assertion,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to parse telemetry body'
@@ -294,6 +342,7 @@ export function createBridgeApp(options: { gateManager?: GateManager } = {}): Br
   return {
     app,
     gateManager,
+    assertionEngine,
     nodeWs,
     broadcast,
   }
@@ -305,7 +354,10 @@ export function createBridgeApp(options: { gateManager?: GateManager } = {}): Br
 export function startBridgeServer(options: BridgeServerOptions = {}): Promise<RunningBridgeServer> {
   const port = options.port || Number(process.env.PORT || 4560)
   const host = options.host || process.env.HOST || '127.0.0.1'
-  const appInstance = createBridgeApp({ gateManager: options.gateManager })
+  const appInstance = createBridgeApp({
+    gateManager: options.gateManager,
+    assertionEngine: options.assertionEngine,
+  })
 
   return new Promise((resolve) => {
     const server = serve(

@@ -36,6 +36,17 @@ export interface GateDecision {
   modifiedCommand?: string
 }
 
+/** L1 确定性断言引擎判定结果 (L1 Deterministic Assertion Result) */
+export interface AssertionResult {
+  passed: boolean
+  triggerSelfCorrection: boolean
+  triggerGate: boolean
+  reason?: string
+  severity: 'info' | 'warn' | 'critical'
+  rule?: string
+  failureCount?: number
+}
+
 /** 上下文水位与 Token 消耗分布契约 (Context Watermark) */
 export interface ContextWatermark {
   totalLimit: number
@@ -205,6 +216,7 @@ export interface TelemetryEvent {
   gatePayload?: GatePromptPayload
   gateDecision?: GateDecision
   isCorrectionBranch?: boolean
+  assertion?: AssertionResult
   timestamp?: number
   watermark?: ContextWatermark
   watermarkDelta?: {
