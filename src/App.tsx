@@ -1,13 +1,15 @@
+import { useState } from 'react'
 import {
   ReactFlow,
   Controls,
   type Node,
   type Edge,
 } from '@xyflow/react'
-import { Play, RotateCcw, Loader2, Sparkles, ShieldAlert } from 'lucide-react'
+import { Play, Pause, RotateCcw, Sparkles, ShieldAlert } from 'lucide-react'
 import { AgentNode, type AgentNodeData } from './components/AgentNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
 import { ContextStripBar } from './components/ContextStripBar'
+import { PrunableInspectorDrawer } from './components/PrunableInspectorDrawer'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
 
 // 注册自定义节点组件
@@ -99,6 +101,9 @@ export default function App() {
     onNodesChange,
     onEdgesChange,
     isPlaying,
+    isPaused,
+    pauseStream,
+    resumeStream,
     currentPendingGate,
     resolveCurrentGate,
     triggerHitlGate,
@@ -110,10 +115,13 @@ export default function App() {
     isPruned,
     reclaimedTokens,
     pruneContext,
+    prunableItems,
   } = useTelemetryStream({
     initialNodes,
     initialEdges,
   })
+
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false)
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024]">
@@ -181,25 +189,47 @@ export default function App() {
             <span>触发决策门禁 (HITL)</span>
           </button>
 
-          {/* 播放标准流式事件 */}
+          {/* 播放 / 暂停 / 继续流式事件 */}
           <button
-            onClick={() => playStream()}
-            disabled={isPlaying}
+            onClick={() => {
+              if (!isPlaying) {
+                playStream()
+              } else if (isPaused) {
+                resumeStream()
+              } else {
+                pauseStream()
+              }
+            }}
             className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
-              isPlaying
-                ? 'bg-[#E5E0D8] text-[#8F887D] border-[#D6D0C5] cursor-not-allowed'
-                : 'bg-[#1E2024] text-[#FBF9F5] border-[#1E2024] hover:bg-[#34383F]'
+              !isPlaying
+                ? 'bg-[#1E2024] text-[#FBF9F5] border-[#1E2024] hover:bg-[#34383F]'
+                : isPaused
+                  ? 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100 hover:border-emerald-400 shadow-2xs'
+                  : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 hover:border-amber-400'
             }`}
+            title={
+              !isPlaying
+                ? '播放端到端流式遥测因果主干'
+                : isPaused
+                  ? '继续执行已暂停的流式事件'
+                  : '暂停流式事件执行'
+            }
           >
-            {isPlaying ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>正在流式解析...</span>
-              </>
-            ) : (
+            {!isPlaying ? (
               <>
                 <Play className="w-3.5 h-3.5 fill-current" />
                 <span>播放流式事件</span>
+              </>
+            ) : isPaused ? (
+              <>
+                <Play className="w-3.5 h-3.5 fill-current text-emerald-700" />
+                <span>继续执行 (Resume)</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse ml-0.5" />
+              </>
+            ) : (
+              <>
+                <Pause className="w-3.5 h-3.5 fill-current text-amber-700" />
+                <span>暂停流式 (Pause)</span>
               </>
             )}
           </button>
@@ -236,24 +266,43 @@ export default function App() {
         isPruned={isPruned}
         reclaimedTokens={reclaimedTokens}
         onPrune={pruneContext}
+        prunableItems={prunableItems}
+        isInspectorOpen={isInspectorOpen}
+        onInspect={() => setIsInspectorOpen((open) => !open)}
       />
 
-      {/* React Flow 极简画布区域 */}
-      <div className="flex-1 w-full h-full relative paper-pattern">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          minZoom={0.2}
-          maxZoom={1.5}
-        >
-          <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
-        </ReactFlow>
-      </div>
+      {/* 主体画布与侧边栏抽屉协同 Push 布局 */}
+      <main className="flex-1 flex w-full min-h-0 overflow-hidden relative">
+        {/* Left flex-1: The ReactFlow canvas (which smoothly shrinks when drawer opens) */}
+        <div className="flex-1 h-full relative paper-pattern min-w-0 transition-all duration-300">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            minZoom={0.2}
+            maxZoom={1.5}
+          >
+            <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
+          </ReactFlow>
+        </div>
+
+        {/* Right shrink-0: The PrunableInspectorDrawer panel docked seamlessly on the right */}
+        {isInspectorOpen && (
+          <PrunableInspectorDrawer
+            isOpen={isInspectorOpen}
+            onClose={() => setIsInspectorOpen(false)}
+            isPruned={isPruned}
+            reclaimedTokens={reclaimedTokens}
+            onPrune={pruneContext}
+            items={prunableItems}
+            watermark={watermark}
+          />
+        )}
+      </main>
 
       {/* 人类在环决策门禁审批模态窗 */}
       <GateApprovalModal

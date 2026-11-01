@@ -260,4 +260,362 @@ describe('Context Watermark & Token Utilities', () => {
     const ratio = Math.round((totalUsed / DEFAULT_CONTEXT_WATERMARK.totalLimit) * 100)
     assert.equal(ratio, 64)
   })
+
+  it('BASE_CONTEXT_WATERMARK satisfies base state contract (~22k tokens, safe green)', async () => {
+    const { BASE_CONTEXT_WATERMARK } = await import('../types/telemetry')
+    assert.deepEqual(BASE_CONTEXT_WATERMARK, {
+      totalLimit: 128000,
+      systemPrompt: 12000,
+      ltm: 8000,
+      activeTurns: 2000,
+      prunableTools: 0,
+    })
+    const baseTotal =
+      BASE_CONTEXT_WATERMARK.systemPrompt +
+      BASE_CONTEXT_WATERMARK.ltm +
+      BASE_CONTEXT_WATERMARK.activeTurns +
+      BASE_CONTEXT_WATERMARK.prunableTools
+    assert.equal(baseTotal, 22000)
+    const ratio = Math.round((baseTotal / BASE_CONTEXT_WATERMARK.totalLimit) * 100)
+    assert.equal(ratio, 17)
+  })
+
+  it('getDynamicWatermarkDelta calculates step increments based on gestures', async () => {
+    const { getDynamicWatermarkDelta } = await import('../hooks/useTelemetryStream')
+    assert.deepEqual(getDynamicWatermarkDelta({ gesture: 'think' }), {
+      activeTurns: 3000,
+      prunableTools: 0,
+    })
+    assert.deepEqual(getDynamicWatermarkDelta({ gesture: 'edit' }), {
+      activeTurns: 3500,
+      prunableTools: 12000,
+    })
+    assert.deepEqual(
+      getDynamicWatermarkDelta({
+        gesture: 'bash',
+        observation: { exitCode: 0, output: ['Tests passed'] },
+      }),
+      {
+        activeTurns: 3000,
+        prunableTools: 16000,
+      }
+    )
+    assert.deepEqual(getDynamicWatermarkDelta({ gesture: 'gate', isGate: true }), {
+      activeTurns: 500,
+      prunableTools: 0,
+    })
+  })
+
+  it('self-correction scenario accumulates to 46k prunableTools and 88k total tokens (amber warning)', async () => {
+    const { BASE_CONTEXT_WATERMARK } = await import('../types/telemetry')
+    const { SELF_CORRECTION_SCENARIO, getDynamicWatermarkDelta } = await import(
+      '../hooks/useTelemetryStream'
+    )
+
+    let current = { ...BASE_CONTEXT_WATERMARK }
+
+    for (const node of SELF_CORRECTION_SCENARIO) {
+      const delta = getDynamicWatermarkDelta(node)
+      current = {
+        ...current,
+        activeTurns: current.activeTurns + (delta.activeTurns ?? 0),
+        prunableTools: current.prunableTools + (delta.prunableTools ?? 0),
+      }
+    }
+
+    assert.equal(current.prunableTools, 46000)
+    const totalUsed =
+      current.systemPrompt + current.ltm + current.activeTurns + current.prunableTools
+    assert.equal(totalUsed, 88000)
+    const usagePercent = Math.round((totalUsed / current.totalLimit) * 100)
+    assert.equal(usagePercent, 69) // 88000 / 128000 = 68.75% -> 69% amber warning
+  })
+
+  it('default scenario accumulates watermark dynamically as steps progress', async () => {
+    const { BASE_CONTEXT_WATERMARK } = await import('../types/telemetry')
+    const { DEFAULT_TELEMETRY_SCENARIO, getDynamicWatermarkDelta } = await import(
+      '../hooks/useTelemetryStream'
+    )
+
+    let current = { ...BASE_CONTEXT_WATERMARK }
+
+    for (const node of DEFAULT_TELEMETRY_SCENARIO) {
+      const delta = getDynamicWatermarkDelta(node)
+      current = {
+        ...current,
+        activeTurns: current.activeTurns + (delta.activeTurns ?? 0),
+        prunableTools: current.prunableTools + (delta.prunableTools ?? 0),
+      }
+    }
+
+    assert.equal(current.prunableTools, 32000)
+    const totalUsed =
+      current.systemPrompt + current.ltm + current.activeTurns + current.prunableTools
+    assert.equal(totalUsed, 65000)
+  })
 })
+
+describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
+  it('DEFAULT_PRUNABLE_ITEMS satisfies prunable items and token breakdown contract (~46k tokens)', async () => {
+    const { DEFAULT_PRUNABLE_ITEMS } = await import(
+      '../types/telemetry'
+    )
+
+    assert.equal(DEFAULT_PRUNABLE_ITEMS.length, 3)
+
+    // Item 1: Bash pnpm test:pipeline -> 156 passed (~28k tokens)
+    const item1 = DEFAULT_PRUNABLE_ITEMS[0]
+    assert.equal(item1.gesture, 'bash')
+    assert.match(item1.title, /Bash: pnpm test:pipeline -> 156 passed/)
+    assert.match(item1.rawDetail, /150 lines raw test stdout\/stderr, ~28k tokens/)
+    assert.equal(item1.tokens, 28000)
+    assert.equal(item1.statusBadge, '已完成历史使命 (Resolved)')
+    assert.match(item1.foldedSummary, /单元测试回归通过 \(156 passed, 0 failed\)/)
+    assert.ok(!item1.foldedSummary.includes('[已修剪:'), 'foldedSummary must not contain [已修剪:] when not pruned')
+    assert.equal(item1.linesCount, 150)
+    assert.ok(item1.rawPayloadPreview?.includes('$ pnpm test:pipeline'))
+
+    // Item 2: Edit packages/core/pipeline.ts (~14k tokens)
+    const item2 = DEFAULT_PRUNABLE_ITEMS[1]
+    assert.equal(item2.gesture, 'edit')
+    assert.match(item2.title, /Edit: packages\/core\/pipeline\.ts/)
+    assert.match(item2.rawDetail, /Full AST diff & replaced try\/catch \(~14k tokens\)/)
+    assert.equal(item2.tokens, 14000)
+    assert.equal(item2.statusBadge, '已完成历史使命 (Resolved)')
+    assert.ok(!item2.foldedSummary.includes('[已修剪:'))
+    assert.equal(item2.linesCount, 42)
+    assert.ok(item2.rawPayloadPreview?.includes('--- a/packages/core/src/pipeline.ts'))
+
+    // Item 3: Read src/config.ts (~4k tokens)
+    const item3 = DEFAULT_PRUNABLE_ITEMS[2]
+    assert.equal(item3.gesture, 'read')
+    assert.match(item3.title, /Read: src\/config\.ts/)
+    assert.match(item3.rawDetail, /Raw file contents \(~4k tokens\)/)
+    assert.equal(item3.tokens, 4000)
+    assert.equal(item3.statusBadge, '已完成历史使命 (Resolved)')
+    assert.match(item3.foldedSummary, /成功读取 package\.json，确认依赖缺失/)
+    assert.ok(!item3.foldedSummary.includes('[已修剪:'))
+    assert.equal(item3.linesCount, 28)
+    assert.ok(item3.rawPayloadPreview?.includes('@netdive/core'))
+
+    // Total tokens sum to 46,000 (matching DEFAULT_CONTEXT_WATERMARK.prunableTools)
+    const totalTokens = DEFAULT_PRUNABLE_ITEMS.reduce((acc, it) => acc + it.tokens, 0)
+    assert.equal(totalTokens, 46000)
+  })
+
+  it('useTelemetryStream exports pauseStream, resumeStream, isPaused, and togglePauseResume', async () => {
+    const hookModule = await import('../hooks/useTelemetryStream')
+    assert.equal(typeof hookModule.useTelemetryStream, 'function')
+    assert.equal(typeof hookModule.extractPrunableItems, 'function')
+  })
+
+  it('extractPrunableItems dynamically extracts prunable items from completed tool nodes and excludes think/gate/running nodes', async () => {
+    const { extractPrunableItems } = await import('../hooks/useTelemetryStream')
+
+    // 1. Empty nodes returns []
+    assert.deepEqual(extractPrunableItems([]), [])
+
+    // 2. Only think node returns []
+    const thinkNode: any = {
+      id: 'node-think',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '思考步骤',
+        actor: 'Pi (Coordinator)',
+        gesture: 'think',
+        status: 'completed',
+        summary: '规划因果步骤',
+      },
+    }
+    assert.deepEqual(extractPrunableItems([thinkNode]), [])
+
+    // 3. Running tool node returns []
+    const runningBashNode: any = {
+      id: 'node-running-bash',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '执行中测试',
+        actor: 'Claude 3.7 (Worker)',
+        gesture: 'bash',
+        status: 'running',
+        summary: 'pnpm test:pipeline in progress...',
+      },
+    }
+    assert.deepEqual(extractPrunableItems([thinkNode, runningBashNode]), [])
+
+    // 4. Completed bash with test output, completed edit, completed read
+    const completedBashNode: any = {
+      id: 'node-bash',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '单元测试回归',
+        actor: 'Claude 3.7 (Worker)',
+        gesture: 'bash',
+        status: 'completed',
+        summary: 'pnpm test:pipeline -> 156 passed',
+        observation: {
+          exitCode: 0,
+          output: ['Tests: 156 passed, 156 total', 'Time: 1.78s'],
+        },
+      },
+    }
+
+    const completedEditNode: any = {
+      id: 'node-edit',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '代码重构实现',
+        actor: 'Claude 3.7 (Worker)',
+        gesture: 'edit',
+        status: 'completed',
+        summary: '移除原生 try-catch，迁移至 radash.tryit',
+      },
+    }
+
+    const completedReadNode: any = {
+      id: 'node-read',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '读取配置',
+        actor: 'Claude 3.7 (Worker)',
+        gesture: 'read',
+        status: 'completed',
+        summary: '读取 package.json 依赖契约',
+      },
+    }
+
+    const items = extractPrunableItems([
+      thinkNode,
+      completedEditNode,
+      completedBashNode,
+      completedReadNode,
+    ])
+
+    assert.equal(items.length, 3)
+
+    // Sorted descending by tokens: bash (28k) -> edit (14k) -> read (4k)
+    assert.equal(items[0].id, 'node-bash')
+    assert.equal(items[0].tokens, 28000)
+    assert.equal(items[0].gesture, 'bash')
+    assert.equal(items[0].emoji, '📟')
+    assert.equal(items[0].statusBadge, '已完成历史使命 (Resolved)')
+    assert.equal(items[0].foldedSummary, 'pnpm test:pipeline -> 156 passed')
+    assert.ok(!items[0].foldedSummary.includes('[已修剪:'), 'foldedSummary must not contain [已修剪:] when unpruned')
+    assert.match(items[0].rawDetail, /Tests: 156 passed/)
+    assert.ok(items[0].rawPayloadPreview?.includes('$ pnpm test:pipeline'))
+    assert.equal(items[0].linesCount, 150)
+
+    assert.equal(items[1].id, 'node-edit')
+    assert.equal(items[1].tokens, 14000)
+    assert.equal(items[1].gesture, 'edit')
+    assert.equal(items[1].emoji, '📝')
+    assert.equal(items[1].statusBadge, '已完成历史使命 (Resolved)')
+    assert.equal(items[1].foldedSummary, '移除原生 try-catch，迁移至 radash.tryit')
+    assert.ok(!items[1].foldedSummary.includes('[已修剪:'))
+    assert.ok(items[1].rawPayloadPreview?.includes('--- a/packages/core/src/pipeline.ts'))
+    assert.equal(items[1].linesCount, 42)
+
+    assert.equal(items[2].id, 'node-read')
+    assert.equal(items[2].tokens, 4000)
+    assert.equal(items[2].gesture, 'read')
+    assert.equal(items[2].emoji, '🔍')
+    assert.equal(items[2].statusBadge, '已完成历史使命 (Resolved)')
+    assert.equal(items[2].foldedSummary, '读取 package.json 依赖契约')
+    assert.ok(!items[2].foldedSummary.includes('[已修剪:'))
+    assert.ok(items[2].rawPayloadPreview?.includes('@netdive/core'))
+    assert.equal(items[2].linesCount, 28)
+
+    // 5. When node is pruned (pruned: true), statusBadge updates to '已折叠压缩 (Pruned)' and foldedSummary is marked
+    const prunedBashNode: any = {
+      ...completedBashNode,
+      data: {
+        ...completedBashNode.data,
+        pruned: true,
+      },
+    }
+    const prunedItems = extractPrunableItems([prunedBashNode])
+    assert.equal(prunedItems.length, 1)
+    assert.equal(prunedItems[0].statusBadge, '已折叠压缩 (Pruned)')
+    assert.equal(prunedItems[0].foldedSummary, '[已修剪: pnpm test:pipeline -> 156 passed]')
+  })
+
+  it('extractPrunableItems formats rich rawPayloadPreview and fallback foldedSummary without [已修剪:]', async () => {
+    const { extractPrunableItems } = await import('../hooks/useTelemetryStream')
+
+    // 1. Bash node without summary defaults to clean descriptive summary line
+    const bareBashNode: any = {
+      id: 'bare-bash',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        gesture: 'bash',
+        status: 'completed',
+      },
+    }
+    const [bareItem] = extractPrunableItems([bareBashNode])
+    assert.equal(bareItem.foldedSummary, '单元测试回归通过 (156 passed, 0 failed)')
+    assert.ok(!bareItem.foldedSummary.includes('[已修剪:'))
+    assert.ok(bareItem.rawPayloadPreview?.includes('$ pnpm test:pipeline'))
+    assert.ok(bareItem.rawPayloadPreview?.includes('150 lines raw stdout/stderr hidden'))
+
+    // 2. Failed bash node formats multiline error logs with ✖ and AssertionError
+    const failedBashNode: any = {
+      id: 'failed-bash',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '单测回归 (捕获异常)',
+        gesture: 'bash',
+        status: 'failed',
+        observation: {
+          exitCode: 1,
+          output: [
+            'AssertionError: Expected 200 OK, got 500 Internal Error',
+            'at packages/core/test/pipeline.test.ts:42',
+          ],
+        },
+      },
+    }
+    const [failedItem] = extractPrunableItems([failedBashNode])
+    assert.ok(failedItem.rawPayloadPreview?.includes('$ pnpm test:pipeline'))
+    assert.ok(failedItem.rawPayloadPreview?.includes('✖ AssertionError: Expected 200 OK, got 500'))
+    assert.ok(failedItem.rawPayloadPreview?.includes('150 lines raw stdout/stderr hidden'))
+    assert.equal(failedItem.linesCount, 150)
+
+    // 3. Edit node with custom payload.diff preserves exact diff and counts lines
+    const customDiffNode: any = {
+      id: 'custom-diff',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '注入自愈补丁',
+        gesture: 'edit',
+        status: 'completed',
+        summary: '注入防御性空值 fallback',
+        payload: {
+          diff: '--- a/src/pipeline.ts\n+++ b/src/pipeline.ts\n@@ -10,3 +10,4 @@\n+ if (!payload) return DEFAULT_FALLBACK;\n+ const [err, res] = await tryit(run)();',
+        },
+      },
+    }
+    const [diffItem] = extractPrunableItems([customDiffNode])
+    assert.equal(diffItem.foldedSummary, '注入防御性空值 fallback')
+    assert.ok(!diffItem.foldedSummary.includes('[已修剪:'))
+    assert.ok(diffItem.rawPayloadPreview?.includes('if (!payload) return DEFAULT_FALLBACK;'))
+    assert.equal(diffItem.linesCount, 5)
+  })
+
+  it('PrunableInspectorDrawer and AgentNode components export successfully with expected types', async () => {
+    const { PrunableInspectorDrawer } = await import('../components/PrunableInspectorDrawer')
+    assert.equal(typeof PrunableInspectorDrawer, 'function')
+
+    const { AgentNode } = await import('../components/AgentNode')
+    assert.equal(typeof AgentNode, 'function')
+  })
+})
+
+

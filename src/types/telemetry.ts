@@ -54,6 +54,15 @@ export const DEFAULT_CONTEXT_WATERMARK: ContextWatermark = {
   prunableTools: 46000,
 }
 
+/** 基础基准上下文水位 (22k / 128k, ~17%, 绿区安全水位) */
+export const BASE_CONTEXT_WATERMARK: ContextWatermark = {
+  totalLimit: 128000,
+  systemPrompt: 12000,
+  ltm: 8000,
+  activeTurns: 2000,
+  prunableTools: 0,
+}
+
 /**
  * 格式化 Token 计数展示 (例如 82000 -> 82k, 4500 -> 4.5k)
  */
@@ -64,6 +73,85 @@ export function formatTokens(tokens: number): string {
   }
   return `${tokens}`
 }
+
+/** 可修剪冗余工具调用条目契约 */
+export interface PrunableItem {
+  id: string
+  gesture: 'bash' | 'edit' | 'read'
+  emoji: string
+  title: string
+  rawDetail: string
+  tokens: number
+  statusBadge: string
+  foldedSummary: string
+  rawPayloadPreview?: string
+  linesCount?: number
+}
+
+/** 默认预设冗余工具调用明细 (46k tokens 待修剪分布) */
+export const DEFAULT_PRUNABLE_ITEMS: PrunableItem[] = [
+  {
+    id: 'item-bash',
+    gesture: 'bash',
+    emoji: '📟',
+    title: 'Bash: pnpm test:pipeline -> 156 passed',
+    rawDetail: '150 lines raw test stdout/stderr, ~28k tokens',
+    tokens: 28000,
+    statusBadge: '已完成历史使命 (Resolved)',
+    foldedSummary: '单元测试回归通过 (156 passed, 0 failed)',
+    linesCount: 150,
+    rawPayloadPreview: [
+      '$ pnpm test:pipeline',
+      '> vitest run pipeline',
+      '',
+      '✓ test/pipeline.test.ts (156 tests passed)',
+      '  ✓ pipeline initialization (12ms)',
+      '  ✓ radash.tryit error capture contract (8ms)',
+      '  ✓ defensive fallback on empty payload (5ms)',
+      '  ... (150 lines raw stdout/stderr hidden)',
+    ].join('\n'),
+  },
+  {
+    id: 'item-edit',
+    gesture: 'edit',
+    emoji: '📝',
+    title: 'Edit: packages/core/pipeline.ts',
+    rawDetail: 'Full AST diff & replaced try/catch (~14k tokens)',
+    tokens: 14000,
+    statusBadge: '已完成历史使命 (Resolved)',
+    foldedSummary: 'packages/core/pipeline.ts 重构应用成功，移除 try-catch 样板并引入 radash.tryit',
+    linesCount: 42,
+    rawPayloadPreview: [
+      '--- a/packages/core/src/pipeline.ts',
+      '+++ b/packages/core/src/pipeline.ts',
+      '@@ -24,8 +24,8 @@',
+      '- try {',
+      '-   const res = await run()',
+      '+ const [err, res] = await tryit(run)()',
+    ].join('\n'),
+  },
+  {
+    id: 'item-read',
+    gesture: 'read',
+    emoji: '🔍',
+    title: 'Read: src/config.ts',
+    rawDetail: 'Raw file contents (~4k tokens)',
+    tokens: 4000,
+    statusBadge: '已完成历史使命 (Resolved)',
+    foldedSummary: '成功读取 package.json，确认依赖缺失',
+    linesCount: 28,
+    rawPayloadPreview: [
+      '{',
+      '  "name": "@netdive/core",',
+      '  "version": "0.1.0",',
+      '  "dependencies": {',
+      '    "pathe": "^0.2.0",',
+      '    "radash": "^12.1.0"',
+      '  }',
+      '}',
+    ].join('\n'),
+  },
+]
 
 /** 决策门禁挂起请求负载 (Gate Prompt Payload) */
 export interface GatePromptPayload {
@@ -119,6 +207,10 @@ export interface TelemetryEvent {
   isCorrectionBranch?: boolean
   timestamp?: number
   watermark?: ContextWatermark
+  watermarkDelta?: {
+    activeTurns?: number
+    prunableTools?: number
+  }
   reclaimedTokens?: number
   prunedNodeIds?: string[]
   contextPruned?: ContextPrunedPayload

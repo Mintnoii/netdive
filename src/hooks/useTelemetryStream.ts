@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   useNodesState,
   useEdgesState,
@@ -10,16 +10,255 @@ import type {
   GateDecision,
   GatePromptPayload,
   TelemetryEvent,
+  TelemetryGesture,
   TelemetryObservation,
   TelemetryStatus,
   ContextWatermark,
+  PrunableItem,
 } from '../types/telemetry'
-import { DEFAULT_CONTEXT_WATERMARK } from '../types/telemetry'
+import { BASE_CONTEXT_WATERMARK, formatTokens } from '../types/telemetry'
 import { gateManager } from '../services/gateManager'
 import {
   useBridgeConnection,
 } from './useBridgeConnection'
 export { useBridgeConnection, type UseBridgeConnectionReturn } from './useBridgeConnection'
+
+export interface WatermarkDelta {
+  activeTurns?: number
+  prunableTools?: number
+}
+
+/**
+ * 依据动作手势与执行观测结果计算单步 Token 水位动态增量
+ */
+export function getDynamicWatermarkDelta(item: {
+  gesture?: TelemetryGesture
+  observation?: TelemetryObservation
+  status?: TelemetryStatus
+  isGate?: boolean
+  watermarkDelta?: WatermarkDelta
+}): WatermarkDelta {
+  if (item.watermarkDelta) {
+    return item.watermarkDelta
+  }
+  if (item.isGate || item.gesture === 'gate') {
+    return { activeTurns: 500, prunableTools: 0 }
+  }
+  switch (item.gesture) {
+    case 'think':
+      return { activeTurns: 3000, prunableTools: 0 }
+    case 'read':
+      return { activeTurns: 1500, prunableTools: 8000 }
+    case 'edit':
+      return { activeTurns: 3500, prunableTools: 12000 }
+    case 'bash': {
+      const hasHeavyOutput = Boolean(
+        item.observation?.output && item.observation.output.length > 0
+      )
+      return {
+        activeTurns: 3000,
+        prunableTools: hasHeavyOutput ? 16000 : 12000,
+      }
+    }
+    case 'memory':
+      return { activeTurns: 2000, prunableTools: 1000 }
+    default:
+      return { activeTurns: 2000, prunableTools: 0 }
+  }
+}
+
+/**
+ * 从当前 React Flow 节点拓扑中动态提取可修剪的冗余工具调用条目
+ * 仅捕获已完成的 bash/edit/read 工具调用（或携带 observation/payload 的节点）
+ * 未完成（running）或纯 think/gate 节点不会进入修剪明细
+ */
+export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
+  return nodes
+    .filter((node) => {
+      const data = node.data as unknown as AgentNodeData | undefined
+      if (!data || data.status === 'running') return false
+
+      const isToolGesture =
+        data.gesture === 'bash' ||
+        data.gesture === 'edit' ||
+        data.gesture === 'read'
+
+      const hasObservation = Boolean(
+        data.observation &&
+          (typeof data.observation.exitCode === 'number' ||
+            (data.observation.output && data.observation.output.length > 0))
+      )
+
+      const hasPayloadDiff = Boolean(data.payload?.diff)
+
+      return isToolGesture || hasObservation || hasPayloadDiff
+    })
+    .map((node) => {
+      const data = node.data as unknown as AgentNodeData
+
+      let gesture: 'bash' | 'edit' | 'read' = 'bash'
+      if (
+        data.gesture === 'bash' ||
+        data.gesture === 'edit' ||
+        data.gesture === 'read'
+      ) {
+        gesture = data.gesture
+      } else if (data.payload?.diff) {
+        gesture = 'edit'
+      }
+
+      const emoji =
+        gesture === 'bash' ? '📟' : gesture === 'edit' ? '📝' : '🔍'
+
+      const title =
+        data.title ||
+        (gesture === 'bash'
+          ? 'Bash 执行'
+          : gesture === 'edit'
+            ? '代码编辑'
+            : '读取文件')
+
+      let tokens = 0
+      if (gesture === 'bash') {
+        const hasTestOutput = Boolean(
+          (data.observation?.output && data.observation.output.length > 0) ||
+            (data.summary &&
+              /test|passed|failed|回归|单测|156/i.test(data.summary)) ||
+            (data.title && /test|测试/i.test(data.title))
+        )
+        tokens = hasTestOutput ? 28000 : 16000
+      } else if (gesture === 'edit') {
+        tokens = 14000
+      } else if (gesture === 'read') {
+        tokens = 4000
+      } else {
+        tokens = 8000
+      }
+
+      const isNodePruned = Boolean(data.pruned)
+      const statusBadge = isNodePruned
+        ? '已折叠压缩 (Pruned)'
+        : '已完成历史使命 (Resolved)'
+
+      const rawSummary = data.summary
+        ? data.summary.replace(/^\[已修剪:\s*/, '').replace(/\]$/, '').trim()
+        : ''
+
+      const cleanSummary =
+        rawSummary ||
+        (gesture === 'bash'
+          ? '单元测试回归通过 (156 passed, 0 failed)'
+          : gesture === 'edit'
+            ? `${title} 重构应用成功`
+            : `${title} 内容读取完成`)
+
+      const foldedSummary = isNodePruned
+        ? `[已修剪: ${cleanSummary}]`
+        : cleanSummary
+
+      let rawPayloadPreview = ''
+      let linesCount = 0
+
+      if (gesture === 'bash') {
+        linesCount = 150
+        const isFailed =
+          data.observation?.exitCode !== 0 ||
+          data.status === 'failed' ||
+          data.observation?.output?.some((l) => /fail|error|Assertion/i.test(l))
+
+        if (isFailed) {
+          const errorLines =
+            data.observation?.output && data.observation.output.length > 0
+              ? data.observation.output.map((line) => `✖ ${line}`)
+              : [
+                  '✖ AssertionError: Expected 200 OK, got 500',
+                  '  at test/pipeline.test.ts:42',
+                ]
+          rawPayloadPreview = [
+            '$ pnpm test:pipeline',
+            '> vitest run pipeline',
+            ...errorLines,
+            '  ... (150 lines raw stdout/stderr hidden)',
+          ].join('\n')
+        } else if (data.observation?.output && data.observation.output.length > 0) {
+          rawPayloadPreview = [
+            '$ pnpm test:pipeline',
+            '> vitest run pipeline',
+            ...data.observation.output.map((line) => `✓ ${line}`),
+            '  ... (150 lines raw stdout/stderr hidden)',
+          ].join('\n')
+        } else {
+          rawPayloadPreview = [
+            '$ pnpm test:pipeline',
+            '> vitest run pipeline',
+            '✓ test/pipeline.test.ts (156 tests passed)',
+            '  ✓ pipeline initialization (12ms)',
+            '  ✓ radash.tryit error capture contract (8ms)',
+            '  ✓ defensive fallback on empty payload (5ms)',
+            '  ... (150 lines raw stdout/stderr hidden)',
+          ].join('\n')
+        }
+      } else if (gesture === 'edit') {
+        linesCount = 42
+        if (data.payload?.diff && typeof data.payload.diff === 'string') {
+          rawPayloadPreview = data.payload.diff
+          linesCount = data.payload.diff.split('\n').length
+        } else {
+          rawPayloadPreview = [
+            '--- a/packages/core/src/pipeline.ts',
+            '+++ b/packages/core/src/pipeline.ts',
+            '@@ -24,8 +24,8 @@',
+            '- try {',
+            '-   const res = await run()',
+            '+ const [err, res] = await tryit(run)()',
+          ].join('\n')
+        }
+      } else if (gesture === 'read') {
+        linesCount = 28
+        if (data.payload?.content && typeof data.payload.content === 'string') {
+          rawPayloadPreview = data.payload.content
+          linesCount = data.payload.content.split('\n').length
+        } else {
+          rawPayloadPreview = [
+            '{',
+            '  "name": "@netdive/core",',
+            '  "version": "0.1.0",',
+            '  "dependencies": {',
+            '    "pathe": "^0.2.0",',
+            '    "radash": "^12.1.0"',
+            '  }',
+            '}',
+          ].join('\n')
+        }
+      }
+
+      let rawDetail = ''
+      if (data.observation?.output && data.observation.output.length > 0) {
+        const outputPreview = data.observation.output.join(' | ')
+        rawDetail = `${outputPreview} (~${formatTokens(tokens)} tokens)`
+      } else if (data.summary) {
+        rawDetail = `${data.summary} (~${formatTokens(tokens)} tokens)`
+      } else if (data.payload?.diff) {
+        rawDetail = `Diff payload (~${formatTokens(tokens)} tokens)`
+      } else {
+        rawDetail = `Raw ${gesture} trace (~${formatTokens(tokens)} tokens)`
+      }
+
+      return {
+        id: node.id,
+        gesture,
+        emoji,
+        title,
+        rawDetail,
+        tokens,
+        statusBadge,
+        foldedSummary,
+        rawPayloadPreview,
+        linesCount,
+      }
+    })
+    .sort((a, b) => b.tokens - a.tokens)
+}
 
 export interface TelemetryStreamScenarioNode {
   nodeId: string
@@ -33,6 +272,7 @@ export interface TelemetryStreamScenarioNode {
   gatePayload?: GatePromptPayload
   isCorrectionBranch?: boolean
   observation?: TelemetryObservation
+  watermarkDelta?: WatermarkDelta
 }
 
 /** 默认端到端高保真模拟遥测剧本 (主干因果全链路) */
@@ -43,6 +283,7 @@ export const DEFAULT_TELEMETRY_SCENARIO: TelemetryStreamScenarioNode[] = [
     gesture: 'think',
     title: '目标规划与分解',
     fullSummary: '分析 Ghost pipeline 异常治理任务，规划 4 阶段流式因果拓扑主干。',
+    watermarkDelta: { activeTurns: 3000, prunableTools: 0 },
   },
   {
     nodeId: 'node-2',
@@ -51,6 +292,7 @@ export const DEFAULT_TELEMETRY_SCENARIO: TelemetryStreamScenarioNode[] = [
     gesture: 'edit',
     title: '代码重构实现',
     fullSummary: '移除原生 try-catch 胶水样板，引入 radash.tryit 强契约封装。',
+    watermarkDelta: { activeTurns: 3500, prunableTools: 14000 },
   },
   {
     nodeId: 'node-3',
@@ -59,6 +301,14 @@ export const DEFAULT_TELEMETRY_SCENARIO: TelemetryStreamScenarioNode[] = [
     gesture: 'bash',
     title: '自动化单元测试回归',
     fullSummary: '执行 pnpm test:pipeline -> 156 passed, 0 failed (1.82s) 测试通过。',
+    watermarkDelta: { activeTurns: 3500, prunableTools: 18000 },
+    observation: {
+      exitCode: 0,
+      output: [
+        'Tests: 156 passed, 156 total',
+        'Time: 1.82s',
+      ],
+    },
   },
   {
     nodeId: 'node-4',
@@ -68,6 +318,7 @@ export const DEFAULT_TELEMETRY_SCENARIO: TelemetryStreamScenarioNode[] = [
     title: 'Git 提交与发布门禁',
     fullSummary: '检测到代码提交敏感动作，触发全机门禁审查，协程挂起等待确认。',
     isGate: true,
+    watermarkDelta: { activeTurns: 1000, prunableTools: 0 },
     gatePayload: {
       gateId: 'gate-default-commit',
       title: 'Git 提交与全机门禁审查 (HITL)',
@@ -90,6 +341,7 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     gesture: 'think',
     title: '任务拆解与编排',
     fullSummary: '编排 Ghost 核心数据清洗管道重构，派发 Claude Worker 协程并启动单测观测守护。',
+    watermarkDelta: { activeTurns: 3000, prunableTools: 0 },
   },
   {
     nodeId: 'node-sc-2',
@@ -98,6 +350,7 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     gesture: 'edit',
     title: '代码重构实现',
     fullSummary: '重构数据清洗管道，移除命令式 try-catch 胶水，迁移至 radash.tryit 强契约封装。',
+    watermarkDelta: { activeTurns: 3500, prunableTools: 12000 },
   },
   {
     nodeId: 'node-sc-3',
@@ -107,6 +360,7 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     title: '单测回归 (捕获异常)',
     fullSummary: '执行 pnpm test:pipeline -> 捕获断言异常：1 failed, 155 passed。检测到空输入逃逸。',
     status: 'failed',
+    watermarkDelta: { activeTurns: 3500, prunableTools: 16000 },
     observation: {
       exitCode: 1,
       output: [
@@ -123,6 +377,7 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     title: 'ReAct 自愈诊断分叉',
     fullSummary: '捕获单测 exit: 1 异常堆栈，诊断定位 radash.tryit 在空 payload 输入时未做默认兜底回退。',
     isCorrectionBranch: true,
+    watermarkDelta: { activeTurns: 3000, prunableTools: 0 },
   },
   {
     nodeId: 'node-sc-5',
@@ -132,6 +387,7 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     title: '自愈补丁实施',
     fullSummary: '注入防御性空值 fallback，完善 pipeline 边界强契约校验，消除脏数据逃逸风险。',
     isCorrectionBranch: true,
+    watermarkDelta: { activeTurns: 3500, prunableTools: 8000 },
   },
   {
     nodeId: 'node-sc-6',
@@ -142,6 +398,7 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     fullSummary: '重新执行 pnpm test:pipeline -> 156 passed, 0 failed (1.78s) 单测全部通过！',
     isCorrectionBranch: true,
     status: 'completed',
+    watermarkDelta: { activeTurns: 3000, prunableTools: 10000 },
     observation: {
       exitCode: 0,
       output: [
@@ -159,6 +416,7 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     fullSummary: '单测自愈闭环，重新连回主干因果链。触发 Git 提交审查与全机门禁放行。',
     isGate: true,
     isCorrectionBranch: false,
+    watermarkDelta: { activeTurns: 500, prunableTools: 0 },
     gatePayload: {
       gateId: 'gate-sc-commit',
       title: 'ReAct 自愈收敛与 Git 门禁审查',
@@ -195,12 +453,13 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     bridgeEnabled = true,
     bridgeWsUrl,
     bridgeHttpUrl,
-    initialWatermark = DEFAULT_CONTEXT_WATERMARK,
+    initialWatermark = BASE_CONTEXT_WATERMARK,
   } = options
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
   const [isPlaying, setIsPlaying] = useState<boolean>(false)
+  const [isPaused, setIsPaused] = useState<boolean>(false)
   const [currentPendingGate, setCurrentPendingGate] =
     useState<GatePromptPayload | null>(null)
 
@@ -215,21 +474,76 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     nodesRef.current = nodes
   }, [nodes])
 
-  // 模拟播放的中断与生命周期守卫
+  // 模拟播放的中断与暂停生命周期守卫
   const isCancelledRef = useRef<boolean>(false)
+  const isPausedRef = useRef<boolean>(false)
+  const pauseResolverRef = useRef<(() => void) | null>(null)
 
-  // 纯函数辅助：延时并支持随时中断
-  const interruptibleSleep = useCallback((ms: number) => {
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        resolve(!isCancelledRef.current)
-      }, ms)
-      if (isCancelledRef.current) {
-        clearTimeout(timer)
-        resolve(false)
-      }
+  /**
+   * 检查并在暂停状态下挂起协程，调用 resumeStream 时立即唤醒恢复
+   */
+  const waitWhilePaused = useCallback(async () => {
+    if (isCancelledRef.current) return false
+    if (!isPausedRef.current) return true
+    await new Promise<void>((resolve) => {
+      pauseResolverRef.current = resolve
     })
+    return !isCancelledRef.current
   }, [])
+
+  /**
+   * 纯函数辅助：延时并支持随时中断与暂停
+   */
+  const interruptibleSleep = useCallback(
+    async (ms: number) => {
+      if (!(await waitWhilePaused())) return false
+
+      const notCancelled = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          resolve(!isCancelledRef.current)
+        }, ms)
+        if (isCancelledRef.current) {
+          clearTimeout(timer)
+          resolve(false)
+        }
+      })
+      if (!notCancelled || isCancelledRef.current) return false
+      return await waitWhilePaused()
+    },
+    [waitWhilePaused]
+  )
+
+  /**
+   * 暂停当前流式播放
+   */
+  const pauseStream = useCallback(() => {
+    isPausedRef.current = true
+    setIsPaused(true)
+  }, [])
+
+  /**
+   * 恢复当前流式播放
+   */
+  const resumeStream = useCallback(() => {
+    isPausedRef.current = false
+    setIsPaused(false)
+    if (pauseResolverRef.current) {
+      const resolve = pauseResolverRef.current
+      pauseResolverRef.current = null
+      resolve()
+    }
+  }, [])
+
+  /**
+   * 切换流式播放的暂停与继续状态
+   */
+  const togglePauseResume = useCallback(() => {
+    if (isPausedRef.current) {
+      resumeStream()
+    } else {
+      pauseStream()
+    }
+  }, [pauseStream, resumeStream])
 
   /**
    * 处理单个强类型 TelemetryEvent，动态更新 React Flow 节点与连线
@@ -265,6 +579,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
               summary: event.delta || '',
               isCorrectionBranch: event.isCorrectionBranch,
               observation: event.observation,
+              payload: event.payload,
             } satisfies AgentNodeData,
           }
 
@@ -341,6 +656,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
                   ? (currentData.summary || '') + event.delta
                   : currentData.summary,
                 observation: event.observation ?? currentData.observation,
+                payload: event.payload ?? currentData.payload,
                 isCorrectionBranch:
                   event.isCorrectionBranch ?? currentData.isCorrectionBranch,
               } satisfies AgentNodeData,
@@ -364,6 +680,20 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             return edge
           })
         )
+
+        // 动态累加或同步上下文 Token 水位
+        if (event.watermark) {
+          setWatermark(event.watermark)
+        } else {
+          const delta = getDynamicWatermarkDelta(event)
+          if (delta.activeTurns || delta.prunableTools) {
+            setWatermark((prev) => ({
+              ...prev,
+              activeTurns: prev.activeTurns + (delta.activeTurns ?? 0),
+              prunableTools: prev.prunableTools + (delta.prunableTools ?? 0),
+            }))
+          }
+        }
         break
       }
 
@@ -394,6 +724,20 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             edge.target === event.nodeId ? { ...edge, animated: false } : edge
           )
         )
+
+        // 门禁到达：更新上下文 Token 水位
+        if (event.watermark) {
+          setWatermark(event.watermark)
+        } else {
+          const delta = getDynamicWatermarkDelta(event)
+          if (delta.activeTurns || delta.prunableTools) {
+            setWatermark((prev) => ({
+              ...prev,
+              activeTurns: prev.activeTurns + (delta.activeTurns ?? 0),
+              prunableTools: prev.prunableTools + (delta.prunableTools ?? 0),
+            }))
+          }
+        }
         break
       }
 
@@ -484,7 +828,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
         break
       }
     }
-  }, [setNodes, setEdges])
+  }, [setNodes, setEdges, setWatermark])
 
   // 接入 Local Sidecar Bridge (HTTP/WebSocket 实时遥测与门禁联动)
   const bridge = useBridgeConnection({
@@ -527,16 +871,23 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
    */
   const resetStream = useCallback(() => {
     isCancelledRef.current = true
+    isPausedRef.current = false
+    setIsPaused(false)
+    if (pauseResolverRef.current) {
+      const resolve = pauseResolverRef.current
+      pauseResolverRef.current = null
+      resolve()
+    }
     gateManager.clear('Stream reset')
     setCurrentPendingGate(null)
     setIsPlaying(false)
     setIsPruned(false)
     setReclaimedTokens(0)
-    setWatermark(initialWatermark)
+    setWatermark(BASE_CONTEXT_WATERMARK)
     nodesRef.current = initialNodes
     setNodes(initialNodes)
     setEdges(initialEdges)
-  }, [initialNodes, initialEdges, initialWatermark, setNodes, setEdges])
+  }, [initialNodes, initialEdges, setNodes, setEdges])
 
   /**
    * 一键执行上下文剪枝：将冗余工具调用折叠压缩为摘要，释放 Token 水位
@@ -596,14 +947,21 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   const resetWatermark = useCallback(() => {
     setIsPruned(false)
     setReclaimedTokens(0)
-    setWatermark(initialWatermark)
-  }, [initialWatermark])
+    setWatermark(BASE_CONTEXT_WATERMARK)
+  }, [])
 
   /**
    * 停止当前流式播放 (保留当前已生成的节点状态)
    */
   const stopStream = useCallback(() => {
     isCancelledRef.current = true
+    isPausedRef.current = false
+    setIsPaused(false)
+    if (pauseResolverRef.current) {
+      const resolve = pauseResolverRef.current
+      pauseResolverRef.current = null
+      resolve()
+    }
     gateManager.clear('Stream stopped')
     setCurrentPendingGate(null)
     setIsPlaying(false)
@@ -616,9 +974,22 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     async (scenario = DEFAULT_TELEMETRY_SCENARIO) => {
       // 停止上一轮并重设标志
       isCancelledRef.current = false
+      isPausedRef.current = false
+      setIsPaused(false)
+      if (pauseResolverRef.current) {
+        const resolve = pauseResolverRef.current
+        pauseResolverRef.current = null
+        resolve()
+      }
       gateManager.clear('New stream started')
       setCurrentPendingGate(null)
       setIsPlaying(true)
+      setIsPruned(false)
+      setReclaimedTokens(0)
+
+      // 重设水位至安全基准状态 (total ~22k tokens, safe green)
+      let currentWatermark: ContextWatermark = { ...BASE_CONTEXT_WATERMARK }
+      setWatermark(currentWatermark)
 
       // 清空画布准备流式长出
       nodesRef.current = []
@@ -629,6 +1000,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
 
       for (const item of scenario) {
         if (isCancelledRef.current) break
+        if (!(await waitWhilePaused())) break
 
         // 1. 发射 node_start：节点从左向右生成，带有运行中动效与连线
         processEvent({
@@ -647,12 +1019,14 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
 
         // 稍作等待以呈现初始卡片挂载
         if (!(await interruptibleSleep(120))) break
+        if (!(await waitWhilePaused())) break
 
         // 2. 打字机流式输出 summary
         const text = item.fullSummary
         let cursor = 0
         while (cursor < text.length) {
           if (isCancelledRef.current) break
+          if (!(await waitWhilePaused())) break
 
           const nextChunk = text.slice(cursor, cursor + chunkSize)
           cursor += chunkSize
@@ -671,6 +1045,16 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
         }
 
         if (isCancelledRef.current) break
+        if (!(await waitWhilePaused())) break
+
+        // 计算当前步骤产生的 Token 水位增量
+        const delta = getDynamicWatermarkDelta(item)
+        currentWatermark = {
+          ...currentWatermark,
+          activeTurns: currentWatermark.activeTurns + (delta.activeTurns ?? 0),
+          prunableTools: currentWatermark.prunableTools + (delta.prunableTools ?? 0),
+        }
+        setWatermark(currentWatermark)
 
         // 3. 节点收尾或进入决策门禁挂起
         if (item.isGate) {
@@ -682,6 +1066,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             actor: item.actor,
             isCorrectionBranch: item.isCorrectionBranch,
             observation: item.observation,
+            watermark: currentWatermark,
           })
 
           const payload: GatePromptPayload = item.gatePayload || {
@@ -712,6 +1097,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
           setCurrentPendingGate(null)
 
           if (isCancelledRef.current) break
+          if (!(await waitWhilePaused())) break
 
           // 记录裁决事件更新节点与边
           processEvent({
@@ -727,6 +1113,8 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
           // 若人类操作员选择拒绝拦截，整洁中止流式播放
           if (decision.action === 'reject') {
             setIsPlaying(false)
+            setIsPaused(false)
+            isPausedRef.current = false
             return
           }
         } else {
@@ -739,16 +1127,20 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             status: item.status || 'completed',
             isCorrectionBranch: item.isCorrectionBranch,
             observation: item.observation,
+            watermark: currentWatermark,
           })
         }
 
         // 步骤间微间隔，呈现从左向右的因果推进节奏
         if (!(await interruptibleSleep(stepPauseMs))) break
+        if (!(await waitWhilePaused())) break
       }
 
       setIsPlaying(false)
+      setIsPaused(false)
+      isPausedRef.current = false
     },
-    [chunkSize, chunkDelayMs, stepPauseMs, interruptibleSleep, processEvent, setNodes, setEdges]
+    [chunkSize, chunkDelayMs, stepPauseMs, interruptibleSleep, waitWhilePaused, processEvent, setNodes, setEdges]
   )
 
   /**
@@ -833,9 +1225,19 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   useEffect(() => {
     return () => {
       isCancelledRef.current = true
+      isPausedRef.current = false
+      if (pauseResolverRef.current) {
+        pauseResolverRef.current()
+        pauseResolverRef.current = null
+      }
       gateManager.clear('Component unmounted')
     }
   }, [])
+
+  // 动态提取当前 DAG 画布上已完成的冗余工具调用条目
+  const prunableItems = useMemo(() => {
+    return extractPrunableItems(nodes)
+  }, [nodes])
 
   return {
     nodes,
@@ -851,6 +1253,10 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     resetStream,
     stopStream,
     isPlaying,
+    isPaused,
+    pauseStream,
+    resumeStream,
+    togglePauseResume,
     currentPendingGate,
     resolveCurrentGate,
     bridge,
@@ -860,5 +1266,6 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     reclaimedTokens,
     pruneContext,
     resetWatermark,
+    prunableItems,
   }
 }

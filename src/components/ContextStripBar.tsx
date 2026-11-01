@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
-import { Scissors, Sparkles, Check, Info } from 'lucide-react'
+import { Scissors, Sparkles, Check, Info, Eye } from 'lucide-react'
 import {
   type ContextWatermark,
+  type PrunableItem,
   DEFAULT_CONTEXT_WATERMARK,
   formatTokens,
 } from '../types/telemetry'
@@ -13,6 +14,9 @@ export interface ContextStripBarProps {
   onPrune?: () => void
   disabled?: boolean
   className?: string
+  prunableItems?: PrunableItem[]
+  onInspect?: () => void
+  isInspectorOpen?: boolean
 }
 
 export const ContextStripBar: React.FC<ContextStripBarProps> = ({
@@ -22,6 +26,9 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
   onPrune,
   disabled = false,
   className = '',
+  prunableItems = [],
+  onInspect,
+  isInspectorOpen = false,
 }) => {
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null)
 
@@ -35,6 +42,16 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
   const activePct = (activeTurns / totalLimit) * 100
   const prunablePct = (prunableTools / totalLimit) * 100
 
+  // 告警水位分级：>= 65% 为琥珀色告警 (Amber Warning)，< 65% 为安全绿色 (Safe Green)
+  const isWarning = usagePercent >= 65 && !isPruned
+  const isCritical = usagePercent >= 85 && !isPruned
+
+  const statusDotClass = isCritical
+    ? 'bg-rose-500 animate-pulse'
+    : isWarning
+      ? 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.7)]'
+      : 'bg-emerald-500'
+
   // 剪枝动作是否可用 (若已剪枝或无可修剪工具调用则置灰)
   const canPrune = !isPruned && prunableTools > 4000 && !disabled
 
@@ -47,7 +64,9 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
         {/* 左侧：标题、总体水位及状态 */}
         <div className="flex items-center space-x-3">
           <div className="flex items-center space-x-1.5 font-semibold text-[#1E2024]">
-            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+            <span
+              className={`w-2 h-2 rounded-full transition-colors duration-500 ${statusDotClass}`}
+            />
             <span>上下文 Token 内存水位</span>
           </div>
 
@@ -58,6 +77,19 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
             </span>
             <span className="text-[#8F887D]">({usagePercent}%)</span>
           </div>
+
+          {/* 运行态安全 / 告警状态指示胶囊 */}
+          {!isPruned && (
+            <div
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono border transition-all duration-300 ${
+                isWarning
+                  ? 'bg-amber-50 border-amber-300 text-amber-800'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+              }`}
+            >
+              {isWarning ? '告警水位 (Amber Warning)' : '安全水位 (Safe)'}
+            </div>
+          )}
 
           {/* 剪枝已释放指示器 */}
           {isPruned && (
@@ -73,8 +105,27 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
           )}
         </div>
 
-        {/* 右侧：剪枝操作按钮与微提示 */}
-        <div className="flex items-center space-x-3">
+        {/* 右侧：明细查看与剪枝操作按钮 */}
+        <div className="flex items-center space-x-2.5">
+          {/* 查看明细 (Inspect) 按钮 */}
+          <button
+            type="button"
+            onClick={onInspect}
+            title={
+              isInspectorOpen
+                ? '收起冗余上下文修剪抽屉'
+                : `查看当前上下文 ${prunableItems.length > 0 ? `${prunableItems.length} 个` : ''}冗余工具调用明细与折叠预览`
+            }
+            className={`px-2.5 py-1 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
+              isInspectorOpen
+                ? 'bg-[#EAE5DC] text-[#1E2024] border-[#B5AFA4] shadow-2xs font-semibold'
+                : 'border-[#E5E0D8] bg-white text-[#5E6573] hover:text-[#1E2024] hover:bg-[#F4F0EA] hover:border-[#B5AFA4]'
+            }`}
+          >
+            <Eye className="w-3.5 h-3.5 text-[#8F887D]" />
+            <span>{isInspectorOpen ? '收起明细 (Close)' : '查看明细 (Inspect)'}</span>
+          </button>
+
           <button
             type="button"
             onClick={onPrune}
@@ -110,7 +161,7 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
         {/* 片段 1: System Prompt (neutral gray) */}
         <div
           style={{ width: `${systemPct}%` }}
-          className="h-full bg-[#A8A29E] hover:brightness-95 transition-all duration-500 cursor-help"
+          className="h-full bg-[#A8A29E] hover:brightness-95 transition-all duration-700 ease-out cursor-help"
           onMouseEnter={() => setActiveTooltip('system')}
           onMouseLeave={() => setActiveTooltip(null)}
           title={`系统提示词 (System Prompt): ${formatTokens(systemPrompt)} (${Math.round(systemPct)}%)`}
@@ -119,7 +170,7 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
         {/* 片段 2: Long-term Memory (slate/charcoal) */}
         <div
           style={{ width: `${ltmPct}%` }}
-          className="h-full bg-[#334155] hover:brightness-110 transition-all duration-500 cursor-help"
+          className="h-full bg-[#334155] hover:brightness-110 transition-all duration-700 ease-out cursor-help"
           onMouseEnter={() => setActiveTooltip('ltm')}
           onMouseLeave={() => setActiveTooltip(null)}
           title={`长期事实记忆 (LTM Alaya): ${formatTokens(ltm)} (${Math.round(ltmPct)}%)`}
@@ -128,7 +179,7 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
         {/* 片段 3: Active Turns (subtle sky/indigo) */}
         <div
           style={{ width: `${activePct}%` }}
-          className="h-full bg-[#6366F1] hover:brightness-105 transition-all duration-500 cursor-help"
+          className="h-full bg-[#6366F1] hover:brightness-105 transition-all duration-700 ease-out cursor-help"
           onMouseEnter={() => setActiveTooltip('active')}
           onMouseLeave={() => setActiveTooltip(null)}
           title={`活动轮次交互 (Active Turns): ${formatTokens(activeTurns)} (${Math.round(activePct)}%)`}
@@ -137,7 +188,7 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
         {/* 片段 4: Prunable Tools (amber/orange) */}
         <div
           style={{ width: `${prunablePct}%` }}
-          className={`h-full transition-all duration-500 cursor-help ${
+          className={`h-full transition-all duration-700 ease-out cursor-help ${
             isPruned ? 'bg-amber-600/70' : 'bg-[#F59E0B] hover:brightness-105'
           }`}
           onMouseEnter={() => setActiveTooltip('tools')}
