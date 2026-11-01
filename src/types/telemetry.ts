@@ -36,6 +36,35 @@ export interface GateDecision {
   modifiedCommand?: string
 }
 
+/** 上下文水位与 Token 消耗分布契约 (Context Watermark) */
+export interface ContextWatermark {
+  totalLimit: number
+  systemPrompt: number
+  ltm: number
+  activeTurns: number
+  prunableTools: number
+}
+
+/** 默认上下文水位基准 (82k / 128k, ~64%) */
+export const DEFAULT_CONTEXT_WATERMARK: ContextWatermark = {
+  totalLimit: 128000,
+  systemPrompt: 8000,
+  ltm: 12000,
+  activeTurns: 16000,
+  prunableTools: 46000,
+}
+
+/**
+ * 格式化 Token 计数展示 (例如 82000 -> 82k, 4500 -> 4.5k)
+ */
+export function formatTokens(tokens: number): string {
+  if (tokens >= 1000) {
+    const k = tokens / 1000
+    return Number.isInteger(k) ? `${k}k` : `${k.toFixed(1)}k`
+  }
+  return `${tokens}`
+}
+
 /** 决策门禁挂起请求负载 (Gate Prompt Payload) */
 export interface GatePromptPayload {
   gateId: string
@@ -56,11 +85,20 @@ export type TelemetryEventType =
   | 'node_complete'
   | 'gate_prompt'
   | 'gate_resolved'
+  | 'context_pruned'
 
 /** 单测或工具调用执行观测结果 */
 export interface TelemetryObservation {
   exitCode: number
   output: string[]
+}
+
+/** 上下文修剪结果负载 (Context Pruned Payload) */
+export interface ContextPrunedPayload {
+  before: ContextWatermark
+  after: ContextWatermark
+  reclaimedTokens: number
+  prunedNodeIds?: string[]
 }
 
 /** 核心流式遥测事件契约 (TelemetryEvent) */
@@ -69,8 +107,8 @@ export interface TelemetryEvent {
   nodeId: string
   parentId?: string
   type: TelemetryEventType
-  gesture: TelemetryGesture
-  actor: TelemetryActor
+  gesture?: TelemetryGesture
+  actor?: TelemetryActor
   title?: string
   status?: TelemetryStatus
   delta?: string // 流式打字增量 / typewriter incremental delta
@@ -80,4 +118,8 @@ export interface TelemetryEvent {
   gateDecision?: GateDecision
   isCorrectionBranch?: boolean
   timestamp?: number
+  watermark?: ContextWatermark
+  reclaimedTokens?: number
+  prunedNodeIds?: string[]
+  contextPruned?: ContextPrunedPayload
 }

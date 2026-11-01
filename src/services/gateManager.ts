@@ -13,14 +13,12 @@ interface PromiseWithResolversResult<T> {
  * Modern ECMAScript standard Promise.withResolvers() 优先调用，优雅降级为 new Promise
  */
 function withResolvers<T>(): PromiseWithResolversResult<T> {
-  const withResolversFn = (
-    Promise as unknown as {
-      withResolvers?: <V>() => PromiseWithResolversResult<V>
-    }
-  ).withResolvers
+  const promiseConstructor = Promise as unknown as {
+    withResolvers?: <V>() => PromiseWithResolversResult<V>
+  }
 
-  if (typeof withResolversFn === 'function') {
-    return withResolversFn<T>()
+  if (typeof promiseConstructor.withResolvers === 'function') {
+    return promiseConstructor.withResolvers<T>()
   }
 
   let resolve!: (value: T | PromiseLike<T>) => void

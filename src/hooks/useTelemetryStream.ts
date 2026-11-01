@@ -12,8 +12,14 @@ import type {
   TelemetryEvent,
   TelemetryObservation,
   TelemetryStatus,
+  ContextWatermark,
 } from '../types/telemetry'
+import { DEFAULT_CONTEXT_WATERMARK } from '../types/telemetry'
 import { gateManager } from '../services/gateManager'
+import {
+  useBridgeConnection,
+} from './useBridgeConnection'
+export { useBridgeConnection, type UseBridgeConnectionReturn } from './useBridgeConnection'
 
 export interface TelemetryStreamScenarioNode {
   nodeId: string
@@ -173,6 +179,10 @@ export interface UseTelemetryStreamOptions {
   chunkSize?: number
   chunkDelayMs?: number
   stepPauseMs?: number
+  bridgeEnabled?: boolean
+  bridgeWsUrl?: string
+  bridgeHttpUrl?: string
+  initialWatermark?: ContextWatermark
 }
 
 export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
@@ -182,6 +192,10 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     chunkSize = 3,
     chunkDelayMs = 35,
     stepPauseMs = 350,
+    bridgeEnabled = true,
+    bridgeWsUrl,
+    bridgeHttpUrl,
+    initialWatermark = DEFAULT_CONTEXT_WATERMARK,
   } = options
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
@@ -189,6 +203,11 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   const [isPlaying, setIsPlaying] = useState<boolean>(false)
   const [currentPendingGate, setCurrentPendingGate] =
     useState<GatePromptPayload | null>(null)
+
+  // 上下文 Token 水位分布与剪枝折叠状态
+  const [watermark, setWatermark] = useState<ContextWatermark>(initialWatermark)
+  const [isPruned, setIsPruned] = useState<boolean>(false)
+  const [reclaimedTokens, setReclaimedTokens] = useState<number>(0)
 
   // 节点引用同步，确保在回调与 Edge 计算中能实时获取最新节点拓扑
   const nodesRef = useRef<Node[]>(nodes)
@@ -240,8 +259,8 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             position: { x: posX, y: posY },
             data: {
               title: event.title || '任务节点',
-              actor: event.actor,
-              gesture: event.gesture,
+              actor: event.actor || 'Pi (Coordinator)',
+              gesture: event.gesture || 'think',
               status: event.status || 'running',
               summary: event.delta || '',
               isCorrectionBranch: event.isCorrectionBranch,
@@ -427,34 +446,158 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
         )
         break
       }
+
+      case 'context_pruned': {
+        const reclaimed = event.reclaimedTokens ?? 42000
+        setIsPruned(true)
+        setReclaimedTokens(reclaimed)
+        if (event.watermark) {
+          setWatermark(event.watermark)
+        } else {
+          setWatermark((prev) => ({
+            ...prev,
+            prunableTools: Math.min(prev.prunableTools, 4000),
+          }))
+        }
+
+        setNodes((prevNodes) =>
+          prevNodes.map((node) => {
+            const currentData = node.data as unknown as AgentNodeData
+            const isPrunable = event.prunedNodeIds
+              ? event.prunedNodeIds.includes(node.id)
+              : currentData.gesture === 'bash' ||
+                currentData.gesture === 'edit' ||
+                currentData.gesture === 'read' ||
+                Boolean(currentData.observation)
+            if (isPrunable) {
+              return {
+                ...node,
+                data: {
+                  ...currentData,
+                  pruned: true,
+                } satisfies AgentNodeData,
+              }
+            }
+            return node
+          })
+        )
+        break
+      }
     }
   }, [setNodes, setEdges])
+
+  // 接入 Local Sidecar Bridge (HTTP/WebSocket 实时遥测与门禁联动)
+  const bridge = useBridgeConnection({
+    enabled: bridgeEnabled,
+    wsUrl: bridgeWsUrl,
+    httpUrl: bridgeHttpUrl,
+    onEvent: (event) => {
+      processEvent(event)
+    },
+    onGatePrompt: (gatePayload) => {
+      setCurrentPendingGate(gatePayload)
+    },
+    onGateResolved: (gateId) => {
+      if (currentPendingGate?.gateId === gateId) {
+        setCurrentPendingGate(null)
+      }
+    },
+  })
 
   /**
    * 人类操作员裁决当前挂起的决策门禁
    */
   const resolveCurrentGate = useCallback(
-    (decision: GateDecision) => {
+    async (decision: GateDecision) => {
       if (currentPendingGate) {
-        gateManager.resolveGate(currentPendingGate.gateId, decision)
+        const gateId = currentPendingGate.gateId
+        // 当桥接服务已连接时，将裁决结果同步发送至 Bridge Server 解除 Agent 协程挂起
+        if (bridge.isConnected) {
+          await bridge.resolveGate(gateId, decision)
+        }
+        gateManager.resolveGate(gateId, decision)
         setCurrentPendingGate(null)
       }
     },
-    [currentPendingGate]
+    [currentPendingGate, bridge]
   )
 
   /**
-   * 停止当前播放并重置画布
+   * 停止当前播放并重置画布与上下文水位
    */
   const resetStream = useCallback(() => {
     isCancelledRef.current = true
     gateManager.clear('Stream reset')
     setCurrentPendingGate(null)
     setIsPlaying(false)
+    setIsPruned(false)
+    setReclaimedTokens(0)
+    setWatermark(initialWatermark)
     nodesRef.current = initialNodes
     setNodes(initialNodes)
     setEdges(initialEdges)
-  }, [initialNodes, initialEdges, setNodes, setEdges])
+  }, [initialNodes, initialEdges, initialWatermark, setNodes, setEdges])
+
+  /**
+   * 一键执行上下文剪枝：将冗余工具调用折叠压缩为摘要，释放 Token 水位
+   */
+  const pruneContext = useCallback(() => {
+    const currentPrunable = watermark.prunableTools
+    const targetPrunable = Math.min(currentPrunable, 4000)
+    const reclaimed = Math.max(0, currentPrunable - targetPrunable) || 42000
+
+    setIsPruned(true)
+    setReclaimedTokens(reclaimed)
+    setWatermark((prev) => ({
+      ...prev,
+      prunableTools: targetPrunable,
+    }))
+
+    setNodes((prevNodes) =>
+      prevNodes.map((node) => {
+        const currentData = node.data as unknown as AgentNodeData
+        const isPrunable =
+          currentData.gesture === 'bash' ||
+          currentData.gesture === 'edit' ||
+          currentData.gesture === 'read' ||
+          Boolean(currentData.observation)
+        if (isPrunable) {
+          return {
+            ...node,
+            data: {
+              ...currentData,
+              pruned: true,
+            } satisfies AgentNodeData,
+          }
+        }
+        return node
+      })
+    )
+
+    // 若 Bridge 已连接，向远端 Agent 与其它端同步 context_pruned 遥测事件
+    if (bridge.isConnected) {
+      bridge.sendTelemetry({
+        traceId: `prune-trace-${Date.now()}`,
+        nodeId: 'context-watermark',
+        type: 'context_pruned',
+        watermark: {
+          ...watermark,
+          prunableTools: targetPrunable,
+        },
+        reclaimedTokens: reclaimed,
+        timestamp: Date.now(),
+      })
+    }
+  }, [watermark, bridge, setNodes])
+
+  /**
+   * 重置上下文水位至初始基准
+   */
+  const resetWatermark = useCallback(() => {
+    setIsPruned(false)
+    setReclaimedTokens(0)
+    setWatermark(initialWatermark)
+  }, [initialWatermark])
 
   /**
    * 停止当前流式播放 (保留当前已生成的节点状态)
@@ -710,5 +853,12 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     isPlaying,
     currentPendingGate,
     resolveCurrentGate,
+    bridge,
+    watermark,
+    setWatermark,
+    isPruned,
+    reclaimedTokens,
+    pruneContext,
+    resetWatermark,
   }
 }

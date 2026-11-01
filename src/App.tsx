@@ -7,6 +7,7 @@ import {
 import { Play, RotateCcw, Loader2, Sparkles, ShieldAlert } from 'lucide-react'
 import { AgentNode, type AgentNodeData } from './components/AgentNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
+import { ContextStripBar } from './components/ContextStripBar'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
 
 // 注册自定义节点组件
@@ -104,6 +105,11 @@ export default function App() {
     playStream,
     playSelfCorrectionStream,
     resetStream,
+    bridge,
+    watermark,
+    isPruned,
+    reclaimedTokens,
+    pruneContext,
   } = useTelemetryStream({
     initialNodes,
     initialEdges,
@@ -118,13 +124,40 @@ export default function App() {
             <span className="w-2.5 h-2.5 rounded-full bg-[#1E2024]"></span>
             <span>NetDive</span>
             <span className="text-[10px] text-[#8F887D] font-mono px-1.5 py-0.5 rounded bg-[#F4F0EA] border border-[#E5E0D8]">
-              Phase 4: Gate Suspension (HITL)
+              Phase 5: Context Token Strip & Pruning
             </span>
           </div>
           <span className="text-xs text-[#8F887D]">|</span>
           <span className="text-xs text-[#5E6573]">
-            单向因果主干 · ReAct 自愈分叉 · 决策门禁挂起 (HITL)
+            单向因果主干 · ReAct 自愈分叉 · 决策门禁 (HITL) · 上下文剪枝热力图
           </span>
+
+          {/* Bridge 状态指示胶囊 */}
+          <div
+            className={`ml-2 px-2.5 py-0.5 text-[11px] font-mono rounded-full border flex items-center space-x-1.5 transition-colors ${
+              bridge.isConnected
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                : 'bg-[#F4F0EA] text-[#8F887D] border-[#E5E0D8]'
+            }`}
+            title={
+              bridge.isConnected
+                ? '已连接至 Local Sidecar Bridge (127.0.0.1:4560)，实时流式拓扑与双向门禁已就绪'
+                : '当前处于独立/Mock模式，启动 pnpm server 即可自动连接至 Local Bridge'
+            }
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                bridge.isConnected
+                  ? 'bg-emerald-500 animate-pulse'
+                  : 'bg-[#B5AFA4]'
+              }`}
+            />
+            <span>
+              {bridge.isConnected
+                ? 'Bridge: Connected (127.0.0.1:4560)'
+                : 'Bridge: Standalone / Mock'}
+            </span>
+          </div>
         </div>
 
         {/* 右侧动作控制区 */}
@@ -196,6 +229,14 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* 上下文注意力与剪枝分布条 (Context Token Strip & Pruning) */}
+      <ContextStripBar
+        watermark={watermark}
+        isPruned={isPruned}
+        reclaimedTokens={reclaimedTokens}
+        onPrune={pruneContext}
+      />
 
       {/* React Flow 极简画布区域 */}
       <div className="flex-1 w-full h-full relative paper-pattern">

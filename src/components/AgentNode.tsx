@@ -11,6 +11,7 @@ import {
   ShieldAlert,
   Loader2,
   Sparkles,
+  Scissors,
 } from 'lucide-react'
 import type {
   TelemetryActor,
@@ -29,6 +30,7 @@ export interface AgentNodeData {
   isCorrectionBranch?: boolean
   observation?: TelemetryObservation
   humanSteering?: string
+  pruned?: boolean
 }
 
 export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
@@ -68,6 +70,54 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
     }
     if (nodeData.status === 'running') return 'border-indigo-400 bg-white ring-2 ring-indigo-400/20 shadow-xs'
     return 'border-[#E5E0D8] hover:border-[#B5AFA4]'
+  }
+
+  // 当节点已被上下文剪枝折叠时，展示极简信纸折叠卡片 (Compact Folded Card)
+  if (nodeData.pruned) {
+    return (
+      <div
+        className={`w-[230px] rounded-lg bg-[#FAF8F5] border border-dashed border-[#C5BFB5] p-2.5 shadow-2xs transition-all duration-150 hover:border-[#8F887D] ${
+          selected ? 'ring-2 ring-[#1E2024]/10 border-[#1E2024]' : ''
+        }`}
+      >
+        {/* React Flow 左侧输入连接桩（用于从左到右连线） */}
+        <Handle
+          type="target"
+          position={Position.Left}
+          className="!w-2 !h-2 !bg-[#8F887D] !border-2 !border-[#FAF8F5]"
+        />
+
+        <div className="flex items-center space-x-1.5 mb-1">
+          <div className="p-0.5 rounded bg-[#EDE8E0] text-[#78716C] shrink-0">
+            <Scissors className="w-3 h-3 text-[#78716C]" />
+          </div>
+          <div className="text-[11px] font-semibold text-[#57534E] truncate flex-1" title={nodeData.title}>
+            {nodeData.title}
+          </div>
+          <span className="shrink-0 text-[9px] font-mono px-1.5 py-0.2 rounded bg-[#E7E5E4] text-[#57534E] border border-[#D6D3D1]">
+            已修剪
+          </span>
+        </div>
+
+        <div className="text-[10px] text-[#78716C] font-mono italic truncate mb-1.5" title={nodeData.summary}>
+          {nodeData.summary ? `[折叠摘要] ${nodeData.summary}` : '[冗余工具调用上下文已折叠]'}
+        </div>
+
+        <div className="flex items-center justify-between pt-1 border-t border-[#E7E5E4] text-[9px] text-[#A8A29E] font-mono">
+          <span className="truncate max-w-[120px]" title={nodeData.actor}>
+            {nodeData.actor}
+          </span>
+          <span className="text-amber-800 font-medium">冗余折叠态</span>
+        </div>
+
+        {/* React Flow 右侧输出连接桩 */}
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="!w-2 !h-2 !bg-[#8F887D] !border-2 !border-[#FAF8F5]"
+        />
+      </div>
+    )
   }
 
   return (
