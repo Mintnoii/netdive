@@ -4,8 +4,9 @@ import {
   type Node,
   type Edge,
 } from '@xyflow/react'
-import { Play, RotateCcw, Loader2, Sparkles } from 'lucide-react'
+import { Play, RotateCcw, Loader2, Sparkles, ShieldAlert } from 'lucide-react'
 import { AgentNode, type AgentNodeData } from './components/AgentNode'
+import { GateApprovalModal } from './components/GateApprovalModal'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
 
 // 注册自定义节点组件
@@ -97,6 +98,9 @@ export default function App() {
     onNodesChange,
     onEdgesChange,
     isPlaying,
+    currentPendingGate,
+    resolveCurrentGate,
+    triggerHitlGate,
     playStream,
     playSelfCorrectionStream,
     resetStream,
@@ -114,21 +118,37 @@ export default function App() {
             <span className="w-2.5 h-2.5 rounded-full bg-[#1E2024]"></span>
             <span>NetDive</span>
             <span className="text-[10px] text-[#8F887D] font-mono px-1.5 py-0.5 rounded bg-[#F4F0EA] border border-[#E5E0D8]">
-              Phase 3: Self-Correction
+              Phase 4: Gate Suspension (HITL)
             </span>
           </div>
           <span className="text-xs text-[#8F887D]">|</span>
           <span className="text-xs text-[#5E6573]">
-            单向因果主干 · ReAct 错误捕获与自愈分叉拓扑
+            单向因果主干 · ReAct 自愈分叉 · 决策门禁挂起 (HITL)
           </span>
         </div>
 
         {/* 右侧动作控制区 */}
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2.5">
           <div className="text-xs font-mono text-[#8F887D] mr-2">
             节点数: <span className="text-[#1E2024] font-semibold">{nodes.length}</span> / 边数: <span className="text-[#1E2024] font-semibold">{edges.length}</span>
           </div>
 
+          {/* 触发决策门禁 (HITL) 独立测试按钮 */}
+          <button
+            onClick={() => triggerHitlGate()}
+            disabled={currentPendingGate !== null}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md border flex items-center space-x-1.5 transition-colors cursor-pointer ${
+              currentPendingGate !== null
+                ? 'bg-amber-100 text-amber-900 border-amber-300 cursor-not-allowed'
+                : 'bg-white text-[#1E2024] border-[#E5E0D8] hover:border-[#1E2024] hover:bg-[#F4F0EA]'
+            }`}
+            title="手动触发决策门禁挂起并唤起审批模态窗"
+          >
+            <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+            <span>触发决策门禁 (HITL)</span>
+          </button>
+
+          {/* 播放标准流式事件 */}
           <button
             onClick={() => playStream()}
             disabled={isPlaying}
@@ -151,6 +171,7 @@ export default function App() {
             )}
           </button>
 
+          {/* 注入自愈分叉剧本 */}
           <button
             onClick={() => playSelfCorrectionStream()}
             disabled={isPlaying}
@@ -164,6 +185,7 @@ export default function App() {
             <span>注入单测异常与自愈</span>
           </button>
 
+          {/* 重置 */}
           <button
             onClick={resetStream}
             className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#E5E0D8] bg-white text-[#5E6573] hover:text-[#1E2024] hover:border-[#B5AFA4] flex items-center space-x-1 transition-colors cursor-pointer"
@@ -191,6 +213,12 @@ export default function App() {
           <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
         </ReactFlow>
       </div>
+
+      {/* 人类在环决策门禁审批模态窗 */}
+      <GateApprovalModal
+        payload={currentPendingGate}
+        onResolve={resolveCurrentGate}
+      />
     </div>
   )
 }

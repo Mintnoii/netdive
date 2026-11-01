@@ -28,6 +28,7 @@ export interface AgentNodeData {
   summary?: string
   isCorrectionBranch?: boolean
   observation?: TelemetryObservation
+  humanSteering?: string
 }
 
 export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
@@ -56,6 +57,7 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
   // 状态颜色边框与背景（保持 Paper & Ink 素雅手绘纸本质感，杜绝刺眼多余光晕）
   const getBorderClass = () => {
     if (selected) return 'border-[#1E2024] ring-2 ring-[#1E2024]/10 shadow-md'
+    if (nodeData.status === 'rejected') return 'border-red-400 bg-red-50/50 ring-2 ring-red-400/20 shadow-xs'
     if (nodeData.status === 'failed') return 'border-red-400 bg-red-50/40 shadow-xs'
     if (nodeData.status === 'gate') return 'border-amber-400 bg-amber-50/40 ring-2 ring-amber-400/20'
     if (nodeData.isCorrectionBranch) {
@@ -127,6 +129,18 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
         </div>
       )}
 
+      {/* 人类热纠偏批示徽章 (如有) */}
+      {nodeData.humanSteering && (
+        <div
+          className="mb-2 px-1.5 py-0.5 rounded bg-amber-50/90 border border-amber-300 text-amber-900 text-[9px] font-mono flex items-center space-x-1"
+          title={`热纠偏: ${nodeData.humanSteering}`}
+        >
+          <Sparkles className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+          <span className="font-semibold text-amber-800 shrink-0">已热纠偏:</span>
+          <span className="truncate">{nodeData.humanSteering}</span>
+        </div>
+      )}
+
       {/* 描述与流式打字摘要 */}
       <div className="text-[11px] text-[#5E6573] line-clamp-3 leading-relaxed mb-2 font-mono min-h-[2.5rem] break-words">
         {nodeData.summary || ''}
@@ -158,7 +172,12 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
           )}
           {nodeData.status === 'gate' && (
             <span className="text-amber-700 flex items-center font-bold">
-              <ShieldAlert className="w-3 h-3 mr-0.5 inline" /> 门禁待审
+              <ShieldAlert className="w-3 h-3 mr-0.5 inline animate-pulse" /> 门禁待审
+            </span>
+          )}
+          {nodeData.status === 'rejected' && (
+            <span className="text-red-700 flex items-center font-bold">
+              <AlertCircle className="w-3 h-3 mr-0.5 inline text-red-600" /> 已拦截
             </span>
           )}
         </div>

@@ -27,6 +27,27 @@ export type TelemetryStatus =
   | 'completed'
   | 'failed'
   | 'gate'
+  | 'rejected'
+
+/** 人类在环决策结果契约 (Human Gate Decision) */
+export interface GateDecision {
+  action: 'approve' | 'reject' | 'modify'
+  feedback?: string
+  modifiedCommand?: string
+}
+
+/** 决策门禁挂起请求负载 (Gate Prompt Payload) */
+export interface GatePromptPayload {
+  gateId: string
+  title: string
+  riskLevel: 'high' | 'critical'
+  proposedAction: {
+    command: string
+    diff?: string
+    explanation: string
+  }
+  timestamp: string
+}
 
 /** 流式遥测事件类型 */
 export type TelemetryEventType =
@@ -55,6 +76,8 @@ export interface TelemetryEvent {
   delta?: string // 流式打字增量 / typewriter incremental delta
   payload?: Record<string, unknown>
   observation?: TelemetryObservation
+  gatePayload?: GatePromptPayload
+  gateDecision?: GateDecision
   isCorrectionBranch?: boolean
   timestamp?: number
 }

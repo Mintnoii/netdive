@@ -7,10 +7,13 @@ import {
 } from '@xyflow/react'
 import type { AgentNodeData } from '../components/AgentNode'
 import type {
+  GateDecision,
+  GatePromptPayload,
   TelemetryEvent,
   TelemetryObservation,
   TelemetryStatus,
 } from '../types/telemetry'
+import { gateManager } from '../services/gateManager'
 
 export interface TelemetryStreamScenarioNode {
   nodeId: string
@@ -21,6 +24,7 @@ export interface TelemetryStreamScenarioNode {
   fullSummary: string
   status?: TelemetryStatus
   isGate?: boolean
+  gatePayload?: GatePromptPayload
   isCorrectionBranch?: boolean
   observation?: TelemetryObservation
 }
@@ -58,6 +62,17 @@ export const DEFAULT_TELEMETRY_SCENARIO: TelemetryStreamScenarioNode[] = [
     title: 'Git 提交与发布门禁',
     fullSummary: '检测到代码提交敏感动作，触发全机门禁审查，协程挂起等待确认。',
     isGate: true,
+    gatePayload: {
+      gateId: 'gate-default-commit',
+      title: 'Git 提交与全机门禁审查 (HITL)',
+      riskLevel: 'high',
+      proposedAction: {
+        command: 'git commit -m "feat(pipeline): complete Ghost pipeline refactor with radash.tryit"',
+        diff: 'diff --git a/src/pipeline.ts b/src/pipeline.ts\n- try { run() } catch (e) { ... }\n+ const [err, res] = await tryit(run)();',
+        explanation: '单元测试已全量回归通过 (156 passed)。系统检测到准备执行本地 Git 提交，依据最高行为门禁红线，必须由人类操作员确认授权。',
+      },
+      timestamp: new Date().toISOString(),
+    },
   },
 ]
 
@@ -138,6 +153,17 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     fullSummary: '单测自愈闭环，重新连回主干因果链。触发 Git 提交审查与全机门禁放行。',
     isGate: true,
     isCorrectionBranch: false,
+    gatePayload: {
+      gateId: 'gate-sc-commit',
+      title: 'ReAct 自愈收敛与 Git 门禁审查',
+      riskLevel: 'high',
+      proposedAction: {
+        command: 'git commit -m "fix(pipeline): add defensive fallback for empty payload in tryit"',
+        diff: 'diff --git a/src/pipeline.ts b/src/pipeline.ts\n@@ -42,3 +42,5 @@\n+ if (!payload) return DEFAULT_FALLBACK;\n+ const [err, res] = await tryit(execute)(payload);',
+        explanation: '单测断言异常已由 ReAct 自愈分支补丁修复并通过回归 (156 passed)。申请合并主干并提交代码。',
+      },
+      timestamp: new Date().toISOString(),
+    },
   },
 ]
 
@@ -161,6 +187,8 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
   const [isPlaying, setIsPlaying] = useState<boolean>(false)
+  const [currentPendingGate, setCurrentPendingGate] =
+    useState<GatePromptPayload | null>(null)
 
   // 节点引用同步，确保在回调与 Edge 计算中能实时获取最新节点拓扑
   const nodesRef = useRef<Node[]>(nodes)
@@ -351,17 +379,50 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       }
 
       case 'gate_resolved': {
+        const decision = event.gateDecision
+        const isRejected = decision?.action === 'reject'
+        const isModified = decision?.action === 'modify'
+        const newStatus: TelemetryStatus = isRejected ? 'rejected' : 'completed'
+        const steering = decision?.modifiedCommand || decision?.feedback
+
         setNodes((prevNodes) =>
           prevNodes.map((node) => {
             if (node.id !== event.nodeId) return node
             const currentData = node.data as unknown as AgentNodeData
+            let updatedSummary = currentData.summary || ''
+            if (isRejected) {
+              updatedSummary = `${updatedSummary} [门禁已拦截: ${decision?.feedback || '人类操作员拒绝放行'}]`
+            } else if (isModified) {
+              updatedSummary = `${updatedSummary} [已热纠偏放行]`
+            } else {
+              updatedSummary = `${updatedSummary} [人类已批准放行]`
+            }
+
             return {
               ...node,
               data: {
                 ...currentData,
-                status: 'completed',
+                status: newStatus,
+                summary: updatedSummary,
+                humanSteering: isModified ? steering : currentData.humanSteering,
               } satisfies AgentNodeData,
             }
+          })
+        )
+
+        // 边线状态：若被拦截变为红色实线警示，否则取消动画保持稳态
+        setEdges((prevEdges) =>
+          prevEdges.map((edge) => {
+            if (edge.target === event.nodeId) {
+              return {
+                ...edge,
+                animated: false,
+                style: isRejected
+                  ? { stroke: '#DC2626', strokeWidth: 2 }
+                  : edge.style,
+              }
+            }
+            return edge
           })
         )
         break
@@ -370,10 +431,25 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   }, [setNodes, setEdges])
 
   /**
+   * 人类操作员裁决当前挂起的决策门禁
+   */
+  const resolveCurrentGate = useCallback(
+    (decision: GateDecision) => {
+      if (currentPendingGate) {
+        gateManager.resolveGate(currentPendingGate.gateId, decision)
+        setCurrentPendingGate(null)
+      }
+    },
+    [currentPendingGate]
+  )
+
+  /**
    * 停止当前播放并重置画布
    */
   const resetStream = useCallback(() => {
     isCancelledRef.current = true
+    gateManager.clear('Stream reset')
+    setCurrentPendingGate(null)
     setIsPlaying(false)
     nodesRef.current = initialNodes
     setNodes(initialNodes)
@@ -385,16 +461,20 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
    */
   const stopStream = useCallback(() => {
     isCancelledRef.current = true
+    gateManager.clear('Stream stopped')
+    setCurrentPendingGate(null)
     setIsPlaying(false)
   }, [])
 
   /**
-   * 播放流式事件剧本：从左至右逐个长出节点，打字机流式输出摘要
+   * 播放流式事件剧本：从左至右逐个长出节点，遇到门禁挂起协程等待人类决断
    */
   const playStream = useCallback(
     async (scenario = DEFAULT_TELEMETRY_SCENARIO) => {
       // 停止上一轮并重设标志
       isCancelledRef.current = false
+      gateManager.clear('New stream started')
+      setCurrentPendingGate(null)
       setIsPlaying(true)
 
       // 清空画布准备流式长出
@@ -449,7 +529,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
 
         if (isCancelledRef.current) break
 
-        // 3. 节点收尾或进入门禁
+        // 3. 节点收尾或进入决策门禁挂起
         if (item.isGate) {
           processEvent({
             traceId,
@@ -460,6 +540,52 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
             isCorrectionBranch: item.isCorrectionBranch,
             observation: item.observation,
           })
+
+          const payload: GatePromptPayload = item.gatePayload || {
+            gateId: `gate-${item.nodeId}`,
+            title: item.title,
+            riskLevel: 'high',
+            proposedAction: {
+              command: 'git commit -m "feat(pipeline): verified changes"',
+              explanation: item.fullSummary,
+            },
+            timestamp: new Date().toISOString(),
+          }
+
+          // 触发模态窗并挂起 Promise 协程
+          setCurrentPendingGate(payload)
+
+          let decision: GateDecision
+          try {
+            decision = await gateManager.registerGate(payload)
+          } catch (err) {
+            decision = {
+              action: 'reject',
+              feedback: err instanceof Error ? err.message : 'Gate cancelled',
+            }
+          }
+
+          // 模态窗关闭
+          setCurrentPendingGate(null)
+
+          if (isCancelledRef.current) break
+
+          // 记录裁决事件更新节点与边
+          processEvent({
+            traceId,
+            nodeId: item.nodeId,
+            type: 'gate_resolved',
+            gesture: item.gesture,
+            actor: item.actor,
+            gateDecision: decision,
+            isCorrectionBranch: item.isCorrectionBranch,
+          })
+
+          // 若人类操作员选择拒绝拦截，整洁中止流式播放
+          if (decision.action === 'reject') {
+            setIsPlaying(false)
+            return
+          }
         } else {
           processEvent({
             traceId,
@@ -489,10 +615,82 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     await playStream(SELF_CORRECTION_SCENARIO)
   }, [playStream])
 
+  /**
+   * 直接手动触发决策门禁挂起 (HITL 快速演练)
+   */
+  const triggerHitlGate = useCallback(
+    async (customPayload?: GatePromptPayload) => {
+      // 若当前已有挂起门禁则直接聚焦
+      if (currentPendingGate) return
+
+      // 寻找画布中的门禁节点或 node-4
+      const existingGateNode = nodesRef.current.find(
+        (n) =>
+          (n.data as unknown as AgentNodeData)?.status === 'gate' ||
+          n.id === 'node-4' ||
+          n.id === 'node-sc-7'
+      )
+      const targetNodeId = existingGateNode ? existingGateNode.id : 'node-4'
+
+      const payload: GatePromptPayload = customPayload || {
+        gateId: `gate-hitl-${Date.now()}`,
+        title: 'Git 提交与发布门禁审查 (HITL)',
+        riskLevel: 'high',
+        proposedAction: {
+          command: 'git commit -m "feat(pipeline): complete Ghost pipeline refactor with radash.tryit"',
+          diff: 'diff --git a/src/pipeline.ts b/src/pipeline.ts\n- try { run() } catch (e) { ... }\n+ const [err, res] = await tryit(run)();',
+          explanation: '检测到代码提交敏感动作，触发全机门禁审查。依据最高系统行为门禁，本地 Commit 严禁擅自执行，必须由人类拍板。',
+        },
+        timestamp: new Date().toISOString(),
+      }
+
+      // 将目标节点置为门禁待审状态
+      setNodes((prevNodes) =>
+        prevNodes.map((node) => {
+          if (node.id !== targetNodeId) return node
+          const currentData = node.data as unknown as AgentNodeData
+          return {
+            ...node,
+            data: {
+              ...currentData,
+              status: 'gate',
+            } satisfies AgentNodeData,
+          }
+        })
+      )
+
+      setCurrentPendingGate(payload)
+      let decision: GateDecision
+      try {
+        decision = await gateManager.registerGate(payload)
+      } catch (err) {
+        decision = {
+          action: 'reject',
+          feedback: err instanceof Error ? err.message : 'Gate cancelled',
+        }
+      }
+
+      setCurrentPendingGate(null)
+
+      processEvent({
+        traceId: `hitl-trace-${Date.now()}`,
+        nodeId: targetNodeId,
+        type: 'gate_resolved',
+        gesture: 'gate',
+        actor: 'Human Operator',
+        gateDecision: decision,
+      })
+
+      return decision
+    },
+    [currentPendingGate, processEvent, setNodes]
+  )
+
   // 组件卸载时安全清理定时器与中断标志
   useEffect(() => {
     return () => {
       isCancelledRef.current = true
+      gateManager.clear('Component unmounted')
     }
   }, [])
 
@@ -506,8 +704,11 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     processEvent,
     playStream,
     playSelfCorrectionStream,
+    triggerHitlGate,
     resetStream,
     stopStream,
     isPlaying,
+    currentPendingGate,
+    resolveCurrentGate,
   }
 }
