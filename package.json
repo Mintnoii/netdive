@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "tsx --test src/server/bridge.test.ts src/services/assertionEngine.test.ts src/services/microCompactor.test.ts src/services/transcriptParser.test.ts src/pages/CompactorLabPage.test.ts src/client/reporter.test.ts",
+    "test": "tsx --test src/server/bridge.test.ts src/services/assertionEngine.test.ts src/services/microCompactor.test.ts src/services/transcriptParser.test.ts src/pages/CompactorLabPage.test.ts src/client/reporter.test.ts src/hooks/useTelemetryStream.test.ts src/components/NodeContextMenu.test.ts",
     "preview": "vite preview",
     "start": "tsx src/server/index.ts",
     "test:workflow": "tsx scripts/test-workflow.ts",
+    "test:host-bridge": "tsx scripts/verify-host-extension-e2e.ts",
+    "test:host-sim": "tsx scripts/run-claude-host-simulation.ts",
     "server": "tsx src/server/index.ts"
   },
   "dependencies": {

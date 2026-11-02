@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 820" width="100%" height="100%" style="background:#0b1120; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <!-- 点阵网格 -->
+    <pattern id="grid" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.5" fill="#1e293b" />
+    </pattern>
+
+    <!-- 箭头标记 -->
+    <marker id="arr-cyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#06b6d4" />
+    </marker>
+    <marker id="arr-emerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#10b981" />
+    </marker>
+    <marker id="arr-purple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#a855f7" />
+    </marker>
+    <marker id="arr-amber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#f59e0b" />
+    </marker>
+
+    <!-- 柔和发光 -->
+    <filter id="glow-amber" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <rect width="100%" height="100%" fill="url(#grid)" />
+
+  <!-- 顶部主标题 -->
+  <text x="40" y="44" fill="#f8fafc" font-size="20" font-weight="700" letter-spacing="0.5">Tachikoma 真实双流向全景透视：从 L1 宿主到 L3 微观全因果连通图</text>
+  <text x="40" y="70" fill="#94a3b8" font-size="12">实测事实：Magpie 原生具备 /v1/magpie/usage/requests 账本 · 业务 100% 零侵入 · 零多层代理套娃</text>
+
+  <!-- ==================== 流向 1：长文抓取 (Track A: capture) ==================== -->
+  <g id="track-a">
+    <!-- 泳道框 -->
+    <rect x="40" y="95" width="1200" height="295" rx="12" fill="#0f172a" stroke="#334155" stroke-width="1.5" />
+    <rect x="40" y="95" width="1200" height="32" rx="12" fill="#1e293b" />
+    <circle cx="60" cy="111" r="4" fill="#06b6d4" />
+    <text x="75" y="116" fill="#e2e8f0" font-size="12" font-weight="600">流向一：长文/微信抓取工作流 (Track A: tachikoma capture &lt;url&gt;)</text>
+
+    <!-- Step 1: L1 宿主意图分发 -->
+    <rect x="65" y="145" width="235" height="130" rx="8" fill="rgba(8,51,68,0.4)" stroke="#0891b2" stroke-width="1.5" />
+    <rect x="65" y="145" width="235" height="26" rx="8" fill="rgba(8,145,178,0.3)" />
+    <text x="78" y="162" fill="#cffafe" font-size="11" font-weight="700">【L1 宿主】tool_execution_start</text>
+    <text x="78" y="190" fill="#94a3b8" font-size="11">● 来源: Pi / ClawBot 微信</text>
+    <text x="78" y="210" fill="#94a3b8" font-size="11">● 动作: bash &quot;tachikoma cap&quot;</text>
+    <text x="78" y="230" fill="#67e8f9" font-size="10" font-family="monospace">nodeId: call-cap-101</text>
+    <rect x="78" y="245" width="80" height="18" rx="4" fill="#0e7490" />
+    <text x="86" y="258" fill="#ecfeff" font-size="9">无感语义嗅探</text>
+
+    <!-- 箭头 1 -> 2 -->
+    <path d="M 300 210 L 340 210" fill="none" stroke="#06b6d4" stroke-width="2" marker-end="url(#arr-cyan)" />
+
+    <!-- Step 2: L3 子进程 Fast-HTTP 抓取与去噪 -->
+    <rect x="340" y="145" width="250" height="130" rx="8" fill="rgba(6,78,59,0.35)" stroke="#059669" stroke-width="1.5" />
+    <rect x="340" y="145" width="250" height="26" rx="8" fill="rgba(5,150,105,0.3)" />
+    <text x="353" y="162" fill="#d1fae5" font-size="11" font-weight="700">【L3 微观】本地 Fast-HTTP + 清洗</text>
+    <text x="353" y="190" fill="#94a3b8" font-size="11">● 耗时: 128ms · 提取 8,420 字</text>
+    <text x="353" y="210" fill="#94a3b8" font-size="11">● 过滤: 去除客套话/版权 39%</text>
+    <text x="353" y="230" fill="#6ee7b7" font-size="10" font-family="monospace">Stdout: [WebClipper] 抓取完成</text>
+    <rect x="353" y="245" width="90" height="18" rx="4" fill="#047857" />
+    <text x="361" y="258" fill="#ecfdf5" font-size="9">本地内存纯计算</text>
+
+    <!-- 箭头 2 -> 3 -->
+    <path d="M 590 210 L 630 210" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#arr-emerald)" />
+
+    <!-- Step 3: L2 模型层 实体抽取 (Magpie usage对账) -->
+    <rect x="630" y="145" width="270" height="130" rx="8" fill="rgba(76,29,149,0.3)" stroke="#7c3aed" stroke-width="1.5" />
+    <rect x="630" y="145" width="270" height="26" rx="8" fill="rgba(124,58,237,0.3)" />
+    <text x="643" y="162" fill="#ede9fe" font-size="11" font-weight="700">【L2 模型】Magpie 原生账本对账</text>
+    <text x="643" y="190" fill="#94a3b8" font-size="11">● 模型: auto/gemini-3.8-flash</text>
+    <text x="643" y="210" fill="#94a3b8" font-size="11">● Token: in 3.2k / out 120 (410ms)</text>
+    <text x="643" y="230" fill="#c084fc" font-size="10" font-family="monospace">GET /v1/magpie/usage/requests</text>
+    <rect x="643" y="245" width="105" height="18" rx="4" fill="#6d28d9" />
+    <text x="651" y="258" fill="#f5f3ff" font-size="9">零多层代理·直接对账</text>
+
+    <!-- 箭头 3 -> 4 -->
+    <path d="M 900 210 L 940 210" fill="none" stroke="#a855f7" stroke-width="2" marker-end="url(#arr-purple)" />
+
+    <!-- Step 4: L1 宿主收工与不可变落盘 -->
+    <rect x="940" y="145" width="275" height="130" rx="8" fill="rgba(120,53,15,0.3)" stroke="#d97706" stroke-width="1.5" />
+    <rect x="940" y="145" width="275" height="26" rx="8" fill="rgba(217,119,6,0.3)" />
+    <text x="953" y="162" fill="#fef3c7" font-size="11" font-weight="700">【L1 宿主】tool_execution_end 闭环</text>
+    <text x="953" y="190" fill="#94a3b8" font-size="11">● 产物: Ghost/_raw/articles/*.md</text>
+    <text x="953" y="210" fill="#94a3b8" font-size="11">● SHA256: cfc55202 (字节保真)</text>
+    <text x="953" y="230" fill="#fbbf24" font-size="10" font-family="monospace">NetDive: 4 节点拓扑点亮 completed</text>
+    <rect x="953" y="245" width="85" height="18" rx="4" fill="#b45309" />
+    <text x="961" y="258" fill="#fffbeb" font-size="9">✔ exit: 0 归档</text>
+
+    <!-- 底部状态说明条 -->
+    <rect x="65" y="300" width="1150" height="28" rx="6" fill="#1e293b" />
+    <text x="80" y="318" fill="#94a3b8" font-size="11">🔗 <tspan fill="#38bdf8">全因果链路感知事实：</tspan> 宿主捕获命令发起 ➔ Stdout提取抓取字数 ➔ Magpie对账捕获Token耗时 ➔ 宿主捕获落盘SHA256，所有节点 100% 自动串联！</text>
+  </g>
+
+  <!-- ==================== 流向 2：灵感/单条抖音 (Track B: spark + 本地模型) ==================== -->
+  <g id="track-b">
+    <rect x="40" y="415" width="1200" height="375" rx="12" fill="#0f172a" stroke="#334155" stroke-width="1.5" />
+    <rect x="40" y="415" width="1200" height="32" rx="12" fill="#1e293b" />
+    <circle cx="60" cy="431" r="4" fill="#f59e0b" />
+    <text x="75" y="436" fill="#e2e8f0" font-size="12" font-weight="600">流向二：单条抖音/碎片灵感工作流 (Track B: tachikoma spark &quot;&lt;单条抖音/金句&gt;&quot;)</text>
+
+    <!-- Step 1: L1 宿主捕获 -->
+    <rect x="65" y="470" width="220" height="135" rx="8" fill="rgba(8,51,68,0.4)" stroke="#0891b2" stroke-width="1.5" />
+    <rect x="65" y="470" width="220" height="26" rx="8" fill="rgba(8,145,178,0.3)" />
+    <text x="78" y="487" fill="#cffafe" font-size="11" font-weight="700">【L1 宿主】tool_start</text>
+    <text x="78" y="515" fill="#94a3b8" font-size="11">● 微信发来单条抖音/随笔</text>
+    <text x="78" y="535" fill="#94a3b8" font-size="11">● 动作: bash &quot;spark ...&quot;</text>
+    <text x="78" y="555" fill="#67e8f9" font-size="10" font-family="monospace">nodeId: call-spk-201</text>
+    <rect x="78" y="570" width="80" height="18" rx="4" fill="#0e7490" />
+    <text x="86" y="583" fill="#ecfeff" font-size="9">灵感流信道</text>
+
+    <!-- 箭头 1 -> 2 -->
+    <path d="M 285 537 L 315 537" fill="none" stroke="#06b6d4" stroke-width="2" marker-end="url(#arr-cyan)" />
+
+    <!-- Step 2: L3 本地 Whisper.cpp 语音转录 (Stdout提取) -->
+    <rect x="315" y="470" width="235" height="135" rx="8" fill="rgba(67,56,202,0.3)" stroke="#6366f1" stroke-width="1.5" />
+    <rect x="315" y="470" width="235" height="26" rx="8" fill="rgba(99,102,241,0.3)" />
+    <text x="328" y="487" fill="#e0e7ff" font-size="11" font-weight="700">【L3 本地模型】Whisper 转录</text>
+    <text x="328" y="515" fill="#94a3b8" font-size="11">● 本地 ASR: Faster-Whisper</text>
+    <text x="328" y="535" fill="#94a3b8" font-size="11">● 耗时: 1.8s (提取音频文本)</text>
+    <text x="328" y="555" fill="#a5b4fc" font-size="10" font-family="monospace">Stdout: [ASR] 音频转录完成</text>
+    <rect x="328" y="570" width="105" height="18" rx="4" fill="#4338ca" />
+    <text x="336" y="583" fill="#e0e7ff" font-size="9">信令提取·零代码侵入</text>
+
+    <!-- 箭头 2 -> 3 -->
+    <path d="M 550 537 L 580 537" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#arr-purple)" />
+
+    <!-- Step 3: L2 Magpie 6+1 MOC 提纯 -->
+    <rect x="580" y="470" width="230" height="135" rx="8" fill="rgba(76,29,149,0.3)" stroke="#7c3aed" stroke-width="1.5" />
+    <rect x="580" y="470" width="230" height="26" rx="8" fill="rgba(124,58,237,0.3)" />
+    <text x="593" y="487" fill="#ede9fe" font-size="11" font-weight="700">【L2 模型】Magpie 语义提纯</text>
+    <text x="593" y="515" fill="#94a3b8" font-size="11">● 领域: [soul·明心见性]</text>
+    <text x="593" y="535" fill="#94a3b8" font-size="11">● 标签: #认知 #信息茧房</text>
+    <text x="593" y="555" fill="#c084fc" font-size="10" font-family="monospace">Magpie Usage: In 480/Out 65</text>
+    <rect x="593" y="570" width="95" height="18" rx="4" fill="#6d28d9" />
+    <text x="601" y="583" fill="#f5f3ff" font-size="9">网关账本自动关联</text>
+
+    <!-- 箭头 3 -> 4 -->
+    <path d="M 810 537 L 840 537" fill="none" stroke="#a855f7" stroke-width="2" marker-end="url(#arr-purple)" />
+
+    <!-- Step 4: L3 本地 SQLite 原子持久化 (Stdout提取) -->
+    <rect x="840" y="470" width="215" height="135" rx="8" fill="rgba(6,78,59,0.35)" stroke="#059669" stroke-width="1.5" />
+    <rect x="840" y="470" width="215" height="26" rx="8" fill="rgba(5,150,105,0.3)" />
+    <text x="853" y="487" fill="#d1fae5" font-size="11" font-weight="700">【L3 本地存储】SQLite 持久化</text>
+    <text x="853" y="515" fill="#94a3b8" font-size="11">● 目标: .sparks/sparks.db</text>
+    <text x="853" y="535" fill="#94a3b8" font-size="11">● 状态: seed (种子态未污染)</text>
+    <text x="853" y="555" fill="#6ee7b7" font-size="10" font-family="monospace">Stdout: [Sparks] 灵感已入库</text>
+    <rect x="853" y="570" width="90" height="18" rx="4" fill="#047857" />
+    <text x="861" y="583" fill="#ecfdf5" font-size="9">本地 FTS5 索引更新</text>
+
+    <!-- 箭头 4 -> 5 (升格门禁分支) -->
+    <path d="M 1055 537 L 1085 537" fill="none" stroke="#f59e0b" stroke-width="2" marker-end="url(#arr-amber)" />
+
+    <!-- Step 5: L1 门禁分支 (未来自主升格 Ghost) -->
+    <rect x="1085" y="470" width="135" height="135" rx="8" fill="rgba(69,10,10,0.5)" stroke="#f43f5e" stroke-width="1.5" filter="url(#glow-amber)" />
+    <rect x="1085" y="470" width="135" height="26" rx="8" fill="rgba(244,63,94,0.3)" />
+    <text x="1095" y="487" fill="#ffe4e6" font-size="10" font-weight="700">【L1 门禁】promote</text>
+    <text x="1095" y="515" fill="#fca5a5" font-size="10">若升格至 Ghost:</text>
+    <text x="1095" y="535" fill="#e2e8f0" font-size="9">触发 NetDive 审批</text>
+    <text x="1095" y="555" fill="#e2e8f0" font-size="9">人类批准才写盘</text>
+    <rect x="1095" y="570" width="80" height="18" rx="4" fill="#e11d48" />
+    <text x="1103" y="583" fill="#ffffff" font-size="9">HITL 安全门禁</text>
+
+    <!-- 底部状态说明条 -->
+    <rect x="65" y="630" width="1150" height="42" rx="6" fill="#1e293b" />
+    <text x="80" y="648" fill="#94a3b8" font-size="11">💡 <tspan fill="#fbbf24">微观模型感知实测：</tspan> 本地 Whisper 耗时与 SQLite 状态由子进程自然打印 ➔ 宿主 tool_execution_end 结构化提取；Magpie 账本补全 Token；</text>
+    <text x="80" y="663" fill="#94a3b8" font-size="11">   <tspan fill="#34d399">结果：</tspan> 画布上自动生成 [发起] ──► [Whisper本地转录] ──► [Magpie提纯] ──► [SQLite归档] 完整因果长链，业务代码 0 侵入！</text>
+  </g>
+</svg>

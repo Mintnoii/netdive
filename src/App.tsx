@@ -5,15 +5,18 @@ import {
   type Node,
   type Edge,
 } from '@xyflow/react'
-import { Play, Pause, RotateCcw, Sparkles, ShieldAlert } from 'lucide-react'
+import { Play, Pause, RotateCcw, Sparkles, ShieldAlert, FolderGit2 } from 'lucide-react'
 import { AgentNode, type AgentNodeData } from './components/AgentNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
 import { ContextStripBar } from './components/ContextStripBar'
 import { PrunableInspectorDrawer } from './components/PrunableInspectorDrawer'
+import { NodeContextMenu } from './components/NodeContextMenu'
 import { HeaderNav, type StudioTab } from './components/HeaderNav'
+import { SessionListSidebar } from './components/SessionListSidebar'
 import { SessionReplayPage } from './pages/SessionReplayPage'
 import { CompactorLabPage } from './pages/CompactorLabPage'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
+import { formatRelativeTime } from './types/telemetry'
 
 // 注册自定义节点组件
 const nodeTypes = {
@@ -120,6 +123,10 @@ export default function App() {
     reclaimedTokens,
     pruneContext,
     prunableItems,
+    sessionsList,
+    activeSessionId,
+    activeSessionMeta,
+    selectSession,
   } = useTelemetryStream({
     initialNodes: defaultMockNodes,
     initialEdges: defaultMockEdges,
@@ -127,6 +134,12 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<StudioTab>('live')
   const [isInspectorOpen, setIsInspectorOpen] = useState(false)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    node: Node
+  } | null>(null)
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024] overflow-hidden">
@@ -247,7 +260,13 @@ export default function App() {
               {!isPlaying ? (
                 <>
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>播放流式事件</span>
+                  <span>
+                    {activeSessionId === 'default-session'
+                      ? '播放沙盒流式'
+                      : activeSessionId === 'self-correction-session'
+                        ? '播放自愈流式'
+                        : '重放当前会话 (Replay)'}
+                  </span>
                 </>
               ) : isPaused ? (
                 <>
@@ -279,7 +298,10 @@ export default function App() {
 
             {/* 重置 */}
             <button
-              onClick={resetStream}
+              onClick={() => {
+                setContextMenu(null)
+                resetStream()
+              }}
               className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#E5E0D8] bg-white text-[#5E6573] hover:text-[#1E2024] hover:border-[#B5AFA4] flex items-center space-x-1 transition-colors cursor-pointer"
               title="重置画布为初始状态"
             >
@@ -289,7 +311,10 @@ export default function App() {
 
             {/* 清空画布 */}
             <button
-              onClick={clearCanvas}
+              onClick={() => {
+                setContextMenu(null)
+                clearCanvas()
+              }}
               className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#E5E0D8] bg-white text-[#8F887D] hover:text-[#DC2626] hover:border-[#FCA5A5] flex items-center space-x-1 transition-colors cursor-pointer"
               title="清空当前画布所有节点，准备接收纯净的外部 Agent 实时流"
             >
@@ -309,49 +334,140 @@ export default function App() {
 
       {/* 视图内容区：状态隔离且不丢失 Live 状态 */}
       {activeTab === 'live' ? (
-        <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
-          {/* 上下文注意力与剪枝分布条 (Context Token Strip & Pruning) */}
-          <ContextStripBar
-            watermark={watermark}
-            isPruned={isPruned}
-            reclaimedTokens={reclaimedTokens}
-            onPrune={pruneContext}
-            prunableItems={prunableItems}
-            isInspectorOpen={isInspectorOpen}
-            onInspect={() => setIsInspectorOpen((open) => !open)}
+        <div className="flex-1 flex w-full min-h-0 overflow-hidden">
+          {/* 左侧任务会话侧边栏 (Master) */}
+          <SessionListSidebar
+            sessions={sessionsList}
+            activeSessionId={activeSessionId}
+            onSelectSession={(sid) => {
+              setContextMenu(null)
+              selectSession(sid)
+            }}
+            isCollapsed={isSidebarCollapsed}
+            onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
           />
 
-          {/* 主体画布与侧边栏抽屉协同 Push 布局 */}
-          <main className="flex-1 flex w-full min-h-0 overflow-hidden relative">
-            <div className="flex-1 h-full relative paper-pattern min-w-0 transition-all duration-300">
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                nodeTypes={nodeTypes}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                fitView
-                fitViewOptions={{ padding: 0.2 }}
-                minZoom={0.2}
-                maxZoom={1.5}
-              >
-                <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
-              </ReactFlow>
+          {/* 中间核心工作区 (Detail) */}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+            {/* 当前会话面包屑详情条 */}
+            <div className="h-9 px-4 border-b border-[#E5E0D8] bg-[#FAF8F5]/90 backdrop-blur-xs flex items-center justify-between text-xs shrink-0 select-none">
+              <div className="flex items-center space-x-2.5 min-w-0">
+                <div className="flex items-center space-x-1.5 font-medium text-[#1E2024] truncate">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#1E2024] shrink-0" />
+                  <span className="font-semibold truncate max-w-xs md:max-w-md">
+                    {activeSessionMeta?.title || '未命名任务会话'}
+                  </span>
+                </div>
+
+                <span className="text-[#D5CDBD]">·</span>
+
+                {/* 协同 Agent 标签 */}
+                <div className="flex items-center space-x-1 shrink-0">
+                  {activeSessionMeta?.actors && activeSessionMeta.actors.length > 0 ? (
+                    activeSessionMeta.actors.map((actor, idx) => (
+                      <span
+                        key={idx}
+                        className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#EAE4D9] text-[#3D3831] border border-[#D5CDBD]"
+                      >
+                        {actor.replace(/\s*\([^)]*\)/g, '')}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-[10px] font-mono text-[#8F887D]">单 Agent 独立执行</span>
+                  )}
+
+                  {activeSessionMeta?.project && (
+                    <span
+                      className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-50 text-amber-900 border border-amber-200 flex items-center space-x-0.5"
+                      title={`所属工程: ${activeSessionMeta.project}`}
+                    >
+                      <FolderGit2 className="w-2.5 h-2.5 inline mr-0.5 text-amber-700" />
+                      <span>{activeSessionMeta.project}</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-3 text-[11px] font-mono text-[#8F887D] shrink-0 ml-2">
+                <span className="flex items-center space-x-1">
+                  <span className="text-[#1E2024] font-medium">
+                    {activeSessionMeta?.nodeCount ?? nodes.length}
+                  </span>
+                  <span>步节点</span>
+                </span>
+                <span className="text-[#D5CDBD]">·</span>
+                <span>{activeSessionMeta ? formatRelativeTime(activeSessionMeta.updatedAt) : '刚刚'}</span>
+              </div>
             </div>
 
-            {/* 侧边栏抽屉 */}
-            {isInspectorOpen && (
-              <PrunableInspectorDrawer
-                isOpen={isInspectorOpen}
-                onClose={() => setIsInspectorOpen(false)}
-                isPruned={isPruned}
-                reclaimedTokens={reclaimedTokens}
-                onPrune={pruneContext}
-                items={prunableItems}
-                watermark={watermark}
-              />
-            )}
-          </main>
+            {/* 主体画布与侧边栏抽屉协同 Push 布局 */}
+            <main className="flex-1 flex w-full min-h-0 overflow-hidden relative">
+              <div className="flex-1 h-full relative paper-pattern min-w-0 transition-all duration-300">
+                <ReactFlow
+                  nodes={nodes}
+                  edges={edges}
+                  nodeTypes={nodeTypes}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onNodeContextMenu={(event, node) => {
+                    event.preventDefault()
+                    setContextMenu({
+                      x: event.clientX,
+                      y: event.clientY,
+                      node,
+                    })
+                  }}
+                  onPaneClick={() => setContextMenu(null)}
+                  onMoveStart={() => setContextMenu(null)}
+                  fitView
+                  fitViewOptions={{ padding: 0.2 }}
+                  minZoom={0.2}
+                  maxZoom={1.5}
+                >
+                  <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
+                </ReactFlow>
+              </div>
+
+              {/* 节点右键高密度引用与快捷操作菜单 */}
+              {contextMenu && (
+                <NodeContextMenu
+                  x={contextMenu.x}
+                  y={contextMenu.y}
+                  node={contextMenu.node}
+                  sessionMeta={activeSessionMeta}
+                  onClose={() => setContextMenu(null)}
+                  onInspect={() => {
+                    setIsInspectorOpen(true)
+                    setContextMenu(null)
+                  }}
+                />
+              )}
+
+              {/* 侧边栏抽屉 */}
+              {isInspectorOpen && (
+                <PrunableInspectorDrawer
+                  isOpen={isInspectorOpen}
+                  onClose={() => setIsInspectorOpen(false)}
+                  isPruned={isPruned}
+                  reclaimedTokens={reclaimedTokens}
+                  onPrune={pruneContext}
+                  items={prunableItems}
+                  watermark={watermark}
+                />
+              )}
+            </main>
+
+            {/* 底部 Token 水位与剪枝分布条 (Context Token Strip & Pruning) */}
+            <ContextStripBar
+              watermark={watermark}
+              isPruned={isPruned}
+              reclaimedTokens={reclaimedTokens}
+              onPrune={pruneContext}
+              prunableItems={prunableItems}
+              isInspectorOpen={isInspectorOpen}
+              onInspect={() => setIsInspectorOpen((open) => !open)}
+            />
+          </div>
 
           {/* 人类在环决策门禁审批模态窗 */}
           <GateApprovalModal

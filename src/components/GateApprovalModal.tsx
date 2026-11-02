@@ -135,6 +135,27 @@ export const GateApprovalModal: React.FC<GateApprovalModalProps> = ({
 
         {/* 模态窗内容 */}
         <div className="p-5 space-y-4 text-xs overflow-y-auto max-h-[75vh]">
+          {/* 会话与工程来源指引条 */}
+          {(payload.sessionTitle || payload.sessionId || payload.project || payload.actor) && (
+            <div className="flex items-center flex-wrap gap-1.5 p-2 rounded-lg bg-[#FAF8F5] border border-[#E5E0D8] text-[11px] font-mono text-[#5C5549]">
+              {payload.project && (
+                <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-200 font-semibold">
+                  [{payload.project}]
+                </span>
+              )}
+              {payload.sessionTitle && (
+                <span className="font-medium text-[#1E2024] truncate max-w-[240px]" title={payload.sessionTitle}>
+                  会话: {payload.sessionTitle}
+                </span>
+              )}
+              {payload.actor && (
+                <span className="text-[#8F887D]">
+                  · 发起主体: <span className="text-[#3D3831]">{payload.actor}</span>
+                </span>
+              )}
+            </div>
+          )}
+
           {/* 说明阐述 */}
           <div className="text-[#5E6573] leading-relaxed bg-[#F4F0EA]/50 p-2.5 rounded-lg border border-[#E5E0D8]/60">
             {payload.proposedAction.explanation}

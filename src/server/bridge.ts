@@ -67,6 +67,11 @@ export function resolveGatePromptPayload(body: Record<string, unknown>): GatePro
         ? body.timestamp
         : new Date().toISOString()
 
+  const sessionId = (inner.sessionId || body.sessionId || body.session_id) as string | undefined
+  const sessionTitle = (inner.sessionTitle || body.sessionTitle) as string | undefined
+  const project = (inner.project || body.project) as string | undefined
+  const actor = (inner.actor || body.actor) as string | undefined
+
   return {
     gateId,
     title,
@@ -77,6 +82,10 @@ export function resolveGatePromptPayload(body: Record<string, unknown>): GatePro
       explanation,
     },
     timestamp,
+    sessionId: sessionId?.trim() || undefined,
+    sessionTitle: sessionTitle?.trim() || undefined,
+    project: project?.trim() || undefined,
+    actor: actor?.trim() || undefined,
   }
 }
 
@@ -238,11 +247,15 @@ export function createBridgeApp(options: {
       const isCorrectionBranch = Boolean(body.isCorrectionBranch)
       const observation = normalizeTelemetryObservation(body.observation)
       const actor = (typeof body.actor === 'string' ? body.actor : 'Human Operator') as TelemetryEvent['actor']
-      const traceId = (typeof body.traceId === 'string' && body.traceId) || `trace-${gatePayload.gateId}`
+      const sessionId = gatePayload.sessionId || (typeof body.sessionId === 'string' ? body.sessionId : undefined)
+      const traceId = (typeof body.traceId === 'string' && body.traceId) || sessionId || gatePayload.gateId
 
       // 广播 gate_prompt 遥测事件给前端画布，触发挂起与居中审批模态窗
       const promptEvent: TelemetryEvent = {
         traceId,
+        sessionId,
+        sessionTitle: gatePayload.sessionTitle,
+        project: gatePayload.project,
         nodeId,
         parentId,
         type: 'gate_prompt',
@@ -287,6 +300,7 @@ export function createBridgeApp(options: {
       return c.json({ ok: false, error: 'Missing gateId or valid decision ({ action })' }, 400)
     }
 
+    const existingGate = gateManager.getGate(body.gateId)
     const success = gateManager.resolveGate(body.gateId, body.decision)
     if (!success) {
       return c.json(
@@ -298,9 +312,12 @@ export function createBridgeApp(options: {
       )
     }
 
-    // 广播 gate_resolved 事件给所有客户端同步节点状态
+    // 广播 gate_resolved 事件给所有客户端同步节点状态 (继承原会话 sessionId 与 project，严禁造假 traceId)
     const resolvedEvent: TelemetryEvent = {
-      traceId: `trace-resolved-${body.gateId}`,
+      traceId: existingGate?.sessionId || body.gateId,
+      sessionId: existingGate?.sessionId,
+      sessionTitle: existingGate?.sessionTitle,
+      project: existingGate?.project,
       nodeId: body.gateId,
       type: 'gate_resolved',
       gesture: 'gate',
@@ -389,11 +406,16 @@ export function createBridgeApp(options: {
 
           // 支持通过 WebSocket 直接下发 resolve_gate
           if (data.type === 'resolve_gate' && data.gateId && data.decision) {
-            const success = gateManager.resolveGate(String(data.gateId), data.decision as GateDecision)
+            const gateIdStr = String(data.gateId)
+            const existingGate = gateManager.getGate(gateIdStr)
+            const success = gateManager.resolveGate(gateIdStr, data.decision as GateDecision)
             if (success) {
               broadcast({
-                traceId: `trace-resolved-${data.gateId}`,
-                nodeId: String(data.gateId),
+                traceId: existingGate?.sessionId || gateIdStr,
+                sessionId: existingGate?.sessionId,
+                sessionTitle: existingGate?.sessionTitle,
+                project: existingGate?.project,
+                nodeId: gateIdStr,
                 type: 'gate_resolved',
                 gesture: 'gate',
                 actor: 'Human Operator',

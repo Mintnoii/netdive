@@ -2,6 +2,7 @@
  * NetDive (潜网) Telemetry Event Types & Data Contracts
  * 契约驱动的流式拓扑数据契约
  */
+import type { Node } from '@xyflow/react'
 
 /** 节点手势动作类型 */
 export type TelemetryGesture =
@@ -175,6 +176,10 @@ export interface GatePromptPayload {
     explanation: string
   }
   timestamp: string
+  sessionId?: string
+  sessionTitle?: string
+  project?: string
+  actor?: string
 }
 
 /** 流式遥测事件类型 */
@@ -288,8 +293,10 @@ export function formatNodeSummary(summary: unknown): string {
 
 /** 核心流式遥测事件契约 (TelemetryEvent) */
 export interface TelemetryEvent {
-  traceId: string
   nodeId: string
+  sessionId?: string
+  sessionTitle?: string
+  project?: string
   parentId?: string
   type: TelemetryEventType
   gesture?: TelemetryGesture
@@ -315,4 +322,199 @@ export interface TelemetryEvent {
   isAggregated?: boolean
   aggregateCount?: number
   aggregatedEvents?: TelemetryEvent[]
+  traceId?: string // 可选向后兼容别名
 }
+
+/** 会话列表项契约 (Master-Detail 视图数据模型) */
+export interface ActiveSessionItem {
+  id: string
+  title: string
+  actors: string[]
+  status: TelemetryStatus
+  nodeCount: number
+  updatedAt: number
+  project?: string
+}
+
+/**
+ * 提取稳定会话标识 (Session ID)
+ * 严格基于强契约 event.sessionId 提取，消除一切旧协议 trace 猜谜补丁
+ */
+export const resolveSessionId = (event?: Partial<TelemetryEvent>): string =>
+  event?.sessionId?.trim() ||
+  (event?.payload?.sessionId as string)?.trim() ||
+  (event?.payload?.session_id as string)?.trim() ||
+  'default-session'
+
+/**
+ * 提取清晰的会话意图标题 (Session Title)
+ * 声明式意图优先级：sessionTitle > taskTitle / objective > title > 兜底
+ */
+export function resolveSessionTitle(event?: Partial<TelemetryEvent>): string {
+  const payload = event?.payload
+  const explicit =
+    event?.sessionTitle?.trim() ||
+    (payload?.sessionTitle as string)?.trim() ||
+    (payload?.taskTitle as string)?.trim() ||
+    (payload?.objective as string)?.trim()
+
+  if (explicit) return explicit
+
+  const fallbackTitle = event?.title?.trim()
+  if (fallbackTitle) {
+    if (fallbackTitle.startsWith('$ ') && event?.project) {
+      return `${event.project}: 终端命令`
+    }
+    return fallbackTitle
+  }
+
+  const sid = resolveSessionId(event)
+  return sid !== 'default-session' ? `会话 ${sid}` : '未命名任务会话'
+}
+
+/** 相对时间阶梯查表常数 */
+const TIME_STEPS = [
+  { limit: 30_000, label: () => '刚刚' },
+  { limit: 3_600_000, label: (ms: number) => `${Math.floor(ms / 60_000)}分钟前` },
+  { limit: 86_400_000, label: (ms: number) => `${Math.floor(ms / 3_600_000)}小时前` },
+] as const
+
+/**
+ * 声明式格式化相对时间
+ */
+export function formatRelativeTime(timestamp: number): string {
+  const diff = Math.max(0, Date.now() - timestamp)
+  const matched = TIME_STEPS.find((step) => diff < step.limit)
+  return matched ? matched.label(diff) : `${Math.floor(diff / 86_400_000)}天前`
+}
+
+/**
+ * 格式化高密度结构化节点引用指纹 (Markdown)
+ * 供人类快速查阅与直接投递给 AI 进行精准上下文沟通
+ */
+export function formatNodeReference(params: {
+  node: Node
+  sessionId?: string
+  sessionTitle?: string
+  project?: string
+}): string {
+  const { node, sessionId, sessionTitle, project } = params
+  const data = (node?.data ?? {}) as Partial<{
+    title?: string
+    actor?: string
+    gesture?: string
+    status?: string
+    summary?: unknown
+    observation?: TelemetryObservation
+    [key: string]: unknown
+  }>
+
+  const sid = sessionId?.trim() || 'default-session'
+  const stitle = sessionTitle?.trim() || project?.trim() || '当前会话'
+  const nodeId = node?.id || 'unknown-node'
+  const title = data.title?.trim() || nodeId
+  const actor = data.actor?.trim() || '未知主体'
+  const gesture = data.gesture || 'unknown'
+  const status = data.status || 'unknown'
+  const summary = formatNodeSummary(data.summary ?? data.observation?.compactSummary).trim() || '无详细摘要'
+
+  return [
+    '[NetDive Node Reference]',
+    `- 会话: ${sid} (${stitle})`,
+    `- 节点: ${nodeId} (${title})`,
+    `- 执行主体: ${actor}`,
+    `- 手势/状态: ${gesture} · ${status}`,
+    `- 摘要: ${summary}`,
+  ].join('\n')
+}
+
+export interface ContextMenuPosition {
+  x: number
+  y: number
+  flippedX: boolean
+  flippedY: boolean
+}
+
+/** 默认菜单尺寸估算与边距 */
+export const MENU_DEFAULT_WIDTH = 220
+export const MENU_DEFAULT_HEIGHT = 190
+export const MENU_VIEWPORT_MARGIN = 8
+
+/**
+ * 视口防溢出纯函数计算 (Viewport Anti-Overflow Positioning)
+ * 当右侧或下侧超出边界时自动翻转展开，贴边时进行边界安全收敛
+ */
+export function calculateContextMenuPosition(
+  x: number,
+  y: number,
+  menuWidth = MENU_DEFAULT_WIDTH,
+  menuHeight = MENU_DEFAULT_HEIGHT,
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920,
+  viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 1080,
+  margin = MENU_VIEWPORT_MARGIN
+): ContextMenuPosition {
+  const flippedX = x + menuWidth > viewportWidth - margin
+  const flippedY = y + menuHeight > viewportHeight - margin
+
+  let posX = flippedX ? x - menuWidth : x
+  let posY = flippedY ? y - menuHeight : y
+
+  // 极窄视口防超界安全截断
+  posX = Math.max(margin, Math.min(posX, Math.max(margin, viewportWidth - menuWidth - margin)))
+  posY = Math.max(margin, Math.min(posY, Math.max(margin, viewportHeight - menuHeight - margin)))
+
+  return { x: posX, y: posY, flippedX, flippedY }
+}
+
+/**
+ * 复制节点引用到剪贴板核心逻辑 (兼容 Navigator Clipboard 与安全 DOM Fallback)
+ */
+export async function copyNodeReferenceToClipboard(params: {
+  node: Node
+  sessionId?: string
+  sessionTitle?: string
+  project?: string
+  clipboard?: { writeText: (text: string) => Promise<void> }
+}): Promise<{ success: boolean; text: string }> {
+  const { node, sessionId, sessionTitle, project, clipboard } = params
+  const text = formatNodeReference({
+    node,
+    sessionId,
+    sessionTitle,
+    project,
+  })
+
+  // 1. 优先使用注入或原生 navigator.clipboard
+  const targetClipboard = clipboard ?? (typeof navigator !== 'undefined' ? navigator.clipboard : undefined)
+  if (targetClipboard?.writeText) {
+    try {
+      await targetClipboard.writeText(text)
+      return { success: true, text }
+    } catch {
+      // 降级进入 fallback
+    }
+  }
+
+  // 2. 降级为 DOM textarea execCommand fallback (测试/非 HTTPS 环境)
+  if (typeof document !== 'undefined') {
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const succeeded = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      return { success: succeeded, text }
+    } catch {
+      return { success: false, text }
+    }
+  }
+
+  return { success: false, text }
+}
+
+
+

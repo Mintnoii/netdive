@@ -23,6 +23,7 @@ export interface UseBridgeConnectionReturn {
   isConnecting: boolean
   wsUrl: string
   httpUrl: string
+  pendingGates: GatePromptPayload[]
   resolveGate: (gateId: string, decision: GateDecision) => Promise<boolean>
   sendTelemetry: (event: TelemetryEvent) => Promise<boolean>
   reconnect: () => void
@@ -49,6 +50,7 @@ export function useBridgeConnection(
   } = options
 
   const [status, setStatus] = useState<BridgeConnectionStatus>('disconnected')
+  const [pendingGates, setPendingGates] = useState<GatePromptPayload[]>([])
   const [reconnectTrigger, setReconnectTrigger] = useState<number>(0)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
@@ -109,12 +111,10 @@ export function useBridgeConnection(
 
             const data = JSON.parse(raw)
 
-            // 1. 服务端上线同步初始状态
+            // 1. 服务端上线同步初始状态 (历史存量门禁记录于状态中，绝不主动弹出遮罩阻断用户)
             if (data.type === 'bridge_connected') {
               if (Array.isArray(data.pendingGates)) {
-                for (const gate of data.pendingGates) {
-                  onGatePromptRef.current?.(gate)
-                }
+                setPendingGates(data.pendingGates)
               }
               return
             }
@@ -242,6 +242,7 @@ export function useBridgeConnection(
     isConnecting: status === 'connecting',
     wsUrl,
     httpUrl,
+    pendingGates,
     resolveGate,
     sendTelemetry,
     reconnect: manualReconnect,
