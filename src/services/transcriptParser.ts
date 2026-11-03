@@ -956,9 +956,19 @@ export function aggregateConsecutiveToolEvents(
   return result
 }
 
+/** 拓扑排版与网格流式布局配置契约 */
+export interface FlowLayoutOptions {
+  nodesPerRow?: number
+  stepX?: number
+  baseY?: number
+  rowGap?: number
+  branchOffset?: number
+}
+
 /**
  * 核心转换函数 3：将 TelemetryEvent[] 序列计算为 React Flow 所需的 Node[] 与 Edge[] (Shape By Example)
- * 自动根据单向因果主干与自愈分叉计算水平布局与琥珀金分支线
+ * 采用多行流式网格排版 (Row-Wrapped Grid Layout)，告别单调的一字长蛇阵
+ * 充分利用现代化 16:9 画布纵向与横向空间，支持自愈分支相对偏移与琥珀金分支线
  *
  * @example
  * ```ts
@@ -980,7 +990,10 @@ export function aggregateConsecutiveToolEvents(
  * // ]
  * ```
  */
-export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
+export function eventsToFlowNodesAndEdges(
+  events: TelemetryEvent[],
+  options?: FlowLayoutOptions
+): {
   nodes: Node[]
   edges: Edge[]
 } {
@@ -988,25 +1001,25 @@ export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
   const edges: Edge[] = []
   const nodeMap = new Map<string, Node>()
 
-  let currentX = 50
-  const STEP_X = 280
-  const BASE_Y = 180
-  const BRANCH_Y = 340
+  const START_X = 50
+  const STEP_X = options?.stepX ?? 280
+  const BASE_Y = options?.baseY ?? 180
+  const BRANCH_OFFSET = options?.branchOffset ?? 160 // 行内自愈分支下沉偏移 (180 + 160 = 340)
+  const ROW_GAP = options?.rowGap ?? 340 // 行与行之间的垂直跨度，为自愈分支与跨行连线留足空间
+  const NODES_PER_ROW = options?.nodesPerRow ?? 6 // 每行折行主节点数
 
-  // 遵循第一性真实性：取消粗暴硬截断，全量保留因果事件，依托折叠聚合自然收敛 DOM 压力
+  // 遵循第一性真实性：取消粗暴硬截断，全量保留因果事件，依托多行流式网格与折叠聚合自然收敛 DOM 压力
   for (let i = 0; i < events.length; i++) {
     const ev = events[i]
     const parentNode = ev.parentId ? nodeMap.get(ev.parentId) : undefined
 
-    let posX: number
-    if (parentNode) {
-      posX = Math.max(currentX, parentNode.position.x + STEP_X)
-    } else {
-      posX = currentX
-    }
-    currentX = posX + STEP_X
+    // 计算多行流式网格坐标 (Row-Wrapped Grid Layout)
+    const row = Math.floor(i / NODES_PER_ROW)
+    const col = i % NODES_PER_ROW
 
-    const posY = ev.isCorrectionBranch ? BRANCH_Y : BASE_Y
+    const posX = START_X + col * STEP_X
+    const rowBaseY = BASE_Y + row * ROW_GAP
+    const posY = ev.isCorrectionBranch ? rowBaseY + BRANCH_OFFSET : rowBaseY
 
     // 严格安全脱敏：清理巨型 Base64/图片/超长单行，彻底杜绝单节点 2.5MB 撑爆 V8 堆内存导致卡死
     let sanitizedPayload: Record<string, unknown> | undefined = undefined

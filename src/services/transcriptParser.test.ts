@@ -277,6 +277,70 @@ describe('NetDive Transcript Parser Engine', () => {
       assert(branchEdge)
       assert.equal(branchEdge.style?.stroke, '#D97706')
     })
+
+    it('wraps nodes into multi-row grid layout when events exceed nodesPerRow', () => {
+      // 构造 14 个连续因果事件序列
+      const dummyEvents: TelemetryEvent[] = Array.from({ length: 14 }, (_, i) => ({
+        traceId: 'trace-grid-test',
+        nodeId: `node-grid-${i}`,
+        parentId: i > 0 ? `node-grid-${i - 1}` : undefined,
+        type: 'node_complete',
+        gesture: i % 2 === 0 ? 'think' : 'edit',
+        title: `Step ${i}`,
+        status: 'completed',
+        isCorrectionBranch: i === 7, // 第 7 个节点（Row 1 Col 1）作为自愈分支节点
+      }))
+
+      const { nodes, edges } = eventsToFlowNodesAndEdges(dummyEvents)
+      assert.equal(nodes.length, 14)
+      assert.equal(edges.length, 13)
+
+      // 验证 Row 0 (nodes 0..5, nodesPerRow = 6)
+      assert.equal(nodes[0].position.x, 50)
+      assert.equal(nodes[0].position.y, 180)
+      assert.equal(nodes[5].position.x, 50 + 5 * 280) // 1450
+      assert.equal(nodes[5].position.y, 180)
+
+      // 验证 Row 1 折行 (nodes 6..11, rowGap = 340)
+      assert.equal(nodes[6].position.x, 50)
+      assert.equal(nodes[6].position.y, 180 + 340) // 520
+      // 验证 Node 7 作为自愈分支下沉 (branchOffset = 160)
+      assert.equal(nodes[7].position.x, 330)
+      assert.equal(nodes[7].position.y, 520 + 160) // 680
+
+      // 验证 Row 2 折行 (nodes 12..13)
+      assert.equal(nodes[12].position.x, 50)
+      assert.equal(nodes[12].position.y, 180 + 2 * 340) // 860
+      assert.equal(nodes[13].position.x, 330)
+      assert.equal(nodes[13].position.y, 860)
+
+      // 验证跨行边正常连接
+      const crossRowEdge = edges.find((e) => e.source === 'node-grid-5' && e.target === 'node-grid-6')
+      assert(crossRowEdge)
+      assert.equal(crossRowEdge.type, 'smoothstep')
+    })
+
+    it('supports custom nodesPerRow option', () => {
+      const dummyEvents: TelemetryEvent[] = Array.from({ length: 8 }, (_, i) => ({
+        traceId: 'trace-custom-grid',
+        nodeId: `node-cg-${i}`,
+        type: 'node_complete',
+        title: `Step ${i}`,
+        status: 'completed',
+      }))
+
+      // 每行 4 个节点
+      const { nodes } = eventsToFlowNodesAndEdges(dummyEvents, { nodesPerRow: 4 })
+      assert.equal(nodes.length, 8)
+
+      // Node 3 在 Row 0 Col 3
+      assert.equal(nodes[3].position.x, 50 + 3 * 280) // 890
+      assert.equal(nodes[3].position.y, 180)
+
+      // Node 4 折行至 Row 1 Col 0
+      assert.equal(nodes[4].position.x, 50)
+      assert.equal(nodes[4].position.y, 520)
+    })
   })
 
   describe('Consecutive Tool Call Aggregation & Folding', () => {

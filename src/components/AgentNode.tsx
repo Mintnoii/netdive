@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import {
   MessageSquare,
@@ -22,7 +22,7 @@ import type {
   AssertionResult,
   TelemetryEvent,
 } from '../types/telemetry'
-import { formatTokens, normalizeObservationOutput, formatNodeSummary } from '../types/telemetry'
+import { normalizeObservationOutput, formatNodeSummary } from '../types/telemetry'
 
 export interface AgentNodeData {
   title: string
@@ -46,98 +46,6 @@ export interface AgentNodeData {
 
 export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
   const nodeData = data as unknown as AgentNodeData
-
-  // 判断是否为具备可修剪冗余上下文的已完成工具节点
-  const isPrunable =
-    !nodeData.pruned &&
-    nodeData.status === 'completed' &&
-    (nodeData.gesture === 'bash' ||
-      nodeData.gesture === 'edit' ||
-      nodeData.gesture === 'read' ||
-      Boolean(nodeData.payload?.diff) ||
-      Boolean(nodeData.payload?.content))
-
-  const [showTooltip, setShowTooltip] = useState(false)
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const handleMouseEnter = () => {
-    if (!isPrunable) return
-    if (hoverTimerRef.current) {
-      clearTimeout(hoverTimerRef.current)
-    }
-    hoverTimerRef.current = setTimeout(() => {
-      setShowTooltip(true)
-    }, 400)
-  }
-
-  const handleMouseLeave = () => {
-    if (hoverTimerRef.current) {
-      clearTimeout(hoverTimerRef.current)
-      hoverTimerRef.current = null
-    }
-    setShowTooltip(false)
-  }
-
-  useEffect(() => {
-    return () => {
-      if (hoverTimerRef.current) {
-        clearTimeout(hoverTimerRef.current)
-      }
-    }
-  }, [])
-
-  const getPrunableTokens = () => {
-    if (typeof nodeData.prunableTokens === 'number') {
-      return nodeData.prunableTokens
-    }
-    if (nodeData.gesture === 'bash') {
-      const outputLines = normalizeObservationOutput(nodeData.observation?.output)
-      const hasHeavy = Boolean(
-        outputLines.length > 0 ||
-          (nodeData.summary && /test|passed|failed|回归|单测|156/i.test(nodeData.summary)) ||
-          (nodeData.title && /test|测试/i.test(nodeData.title))
-      )
-      return hasHeavy ? 28000 : 16000
-    }
-    if (nodeData.gesture === 'edit' || nodeData.payload?.diff) {
-      return 14000
-    }
-    if (nodeData.gesture === 'read' || nodeData.payload?.content) {
-      return 4000
-    }
-    return 8000
-  }
-
-  const getSnippetPreview = () => {
-    if (nodeData.gesture === 'bash') {
-      const outputLines = normalizeObservationOutput(nodeData.observation?.output)
-      if (outputLines.length > 0) {
-        return outputLines.slice(0, 2).map((l) => `✓ ${l}`).join('\n')
-      }
-      return '$ pnpm test:pipeline\n✓ 156 tests passed'
-    }
-    if (nodeData.gesture === 'edit') {
-      if (typeof nodeData.payload?.diff === 'string') {
-        const lines = nodeData.payload.diff
-          .split('\n')
-          .filter((l) => l.startsWith('+') || l.startsWith('-'))
-          .slice(0, 2)
-        if (lines.length > 0) return lines.join('\n')
-      }
-      return '- try { const res = await run() }\n+ const [err, res] = await tryit(run)()'
-    }
-    if (nodeData.gesture === 'read') {
-      if (typeof nodeData.payload?.content === 'string') {
-        const lines = nodeData.payload.content
-          .split('\n')
-          .filter((l) => l.trim().length > 0)
-          .slice(0, 2)
-        if (lines.length > 0) return lines.join('\n')
-      }
-      return '"name": "@netdive/core",\n"dependencies": { "pathe": "^0.2.0" }'
-    }
-    return nodeData.summary || '原始上下文日志与执行输出'
-  }
 
   // 节点手势图标映射
   const getIcon = () => {
@@ -233,37 +141,8 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
 
   return (
     <div
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
       className={`w-[230px] rounded-lg bg-white border p-3 transition-all duration-150 relative ${getBorderClass()}`}
     >
-      {/* 悬停就地修剪提示气泡 (In-situ Hover Tooltip) */}
-      {isPrunable && showTooltip && !nodeData.pruned && (
-        <div
-          role="tooltip"
-          className="absolute left-1/2 -translate-x-1/2 bottom-[calc(100%+8px)] z-30 w-64 pointer-events-none rounded-lg bg-[#1E2024] text-[#FBF9F5] p-2.5 shadow-xl border border-[#2D3139] font-sans animate-in fade-in zoom-in-95 duration-150"
-        >
-          {/* 气泡下方向下的小三角尖角箭头 */}
-          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rotate-45 bg-[#1E2024] border-r border-b border-[#2D3139]" />
-
-          {/* 标题 */}
-          <div className="flex items-center space-x-1.5 text-xs font-semibold text-amber-300 font-mono mb-1.5">
-            <span>✂ 可修剪冗余上下文 (~{formatTokens(getPrunableTokens())} tokens)</span>
-          </div>
-
-          {/* 1-2行原始输出/diff代码片段预览 */}
-          <div className="bg-[#141618] border border-white/10 rounded px-2 py-1.5 text-[10px] font-mono text-slate-300 leading-relaxed overflow-hidden mb-1.5 break-all whitespace-pre-wrap select-none">
-            {getSnippetPreview()}
-          </div>
-
-          {/* 底部折叠说明 */}
-          <div className="text-[10px] text-[#A8A29E] font-mono flex items-center justify-between">
-            <span>修剪将折叠为单行摘要</span>
-            <span className="text-amber-400/80">Pending</span>
-          </div>
-        </div>
-      )}
-
       {/* React Flow 左侧输入连接桩（用于从左到右连线） */}
       <Handle
         type="target"

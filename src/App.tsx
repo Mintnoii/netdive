@@ -3,11 +3,12 @@ import {
   ReactFlow,
   Controls,
   ReactFlowProvider,
+  useReactFlow,
   type Node,
   type Edge,
 } from '@xyflow/react'
 import { FolderGit2, Copy, Check } from 'lucide-react'
-import { AgentNode, type AgentNodeData } from './components/AgentNode'
+import { AgentNode } from './components/AgentNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
 import { ContextStripBar } from './components/ContextStripBar'
 import { PrunableInspectorDrawer } from './components/PrunableInspectorDrawer'
@@ -18,7 +19,13 @@ import { HeaderNav, type StudioTab } from './components/HeaderNav'
 import { SessionListSidebar } from './components/SessionListSidebar'
 import { CompactorLabPage } from './pages/CompactorLabPage'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
-import { formatRelativeTime, copySessionDiagnosticToClipboard, type ActiveSessionItem, BASE_CONTEXT_WATERMARK } from './types/telemetry'
+import {
+  formatRelativeTime,
+  copySessionDiagnosticToClipboard,
+  type ActiveSessionItem,
+  type TelemetryEvent,
+  BASE_CONTEXT_WATERMARK,
+} from './types/telemetry'
 import { parseTranscript, aggregateConsecutiveToolEvents, eventsToFlowNodesAndEdges } from './services/transcriptParser'
 
 // 注册自定义节点组件
@@ -26,153 +33,139 @@ const nodeTypes = {
   agentNode: AgentNode,
 }
 
-// 初始默认静态节点（从左到右主干推进预览，呈现思考 -> 实现 -> 异常自愈 -> 门禁审批的完整链路）
-const defaultMockNodes: Node[] = [
+// 初始默认因果事件流（涵盖 思考 -> 实现 -> 异常单测 -> ReAct 自愈分叉 -> 自愈回归 -> 门禁审批 完整闭环）
+const defaultMockEvents: TelemetryEvent[] = [
   {
-    id: 'node-sc-1',
-    type: 'agentNode',
-    position: { x: 50, y: 180 },
-    data: {
-      title: '任务拆解与编排',
-      actor: 'Pi (Coordinator)',
-      gesture: 'think',
-      status: 'completed',
-      summary: '编排 Ghost 核心数据清洗管道重构，派发 Claude Worker 协程并启动单测观测守护。',
-    } satisfies AgentNodeData,
+    traceId: 'demo-session',
+    nodeId: 'node-sc-1',
+    type: 'node_complete',
+    gesture: 'think',
+    actor: 'Pi (Coordinator)',
+    title: '任务拆解与编排',
+    status: 'completed',
+    delta: '编排 Ghost 核心数据清洗管道重构，派发 Claude Worker 协程并启动单测观测守护。',
   },
   {
-    id: 'node-sc-2',
-    type: 'agentNode',
-    position: { x: 330, y: 180 },
-    data: {
-      title: '代码重构实现',
-      actor: 'Claude 3.7 (Worker)',
-      gesture: 'edit',
-      status: 'completed',
-      summary: '重构数据清洗管道，移除命令式 try-catch 胶水，迁移至 radash.tryit 强契约封装。',
-    } satisfies AgentNodeData,
+    traceId: 'demo-session',
+    nodeId: 'node-sc-2',
+    parentId: 'node-sc-1',
+    type: 'node_complete',
+    gesture: 'edit',
+    actor: 'Claude 3.7 (Worker)',
+    title: '代码重构实现',
+    status: 'completed',
+    delta: '重构数据清洗管道，移除命令式 try-catch 胶水，迁移至 radash.tryit 强契约封装。',
   },
   {
-    id: 'node-sc-3',
-    type: 'agentNode',
-    position: { x: 610, y: 180 },
-    data: {
-      title: '单测回归 (捕获异常)',
-      actor: 'Claude 3.7 (Worker)',
-      gesture: 'bash',
-      status: 'failed',
-      summary: '执行 pnpm test:pipeline -> 捕获断言异常：1 failed, 155 passed。检测到空输入逃逸。',
-      observation: {
-        exitCode: 1,
-        output: [
-          'AssertionError: Expected 200 OK, got 500 Internal Error',
-          'at packages/core/test/pipeline.test.ts:42',
-        ],
-      },
-    } satisfies AgentNodeData,
+    traceId: 'demo-session',
+    nodeId: 'node-sc-3',
+    parentId: 'node-sc-2',
+    type: 'node_complete',
+    gesture: 'bash',
+    actor: 'Claude 3.7 (Worker)',
+    title: '单测回归 (捕获异常)',
+    status: 'failed',
+    delta: '执行 pnpm test:pipeline -> 捕获断言异常：1 failed, 155 passed。检测到空输入逃逸。',
+    observation: {
+      exitCode: 1,
+      output: [
+        'AssertionError: Expected 200 OK, got 500 Internal Error',
+        'at packages/core/test/pipeline.test.ts:42',
+      ],
+    },
   },
   {
-    id: 'node-sc-4',
-    type: 'agentNode',
-    position: { x: 890, y: 340 },
-    data: {
-      title: 'ReAct 自愈诊断分叉',
-      actor: 'Claude 3.7 (Worker)',
-      gesture: 'think',
-      status: 'completed',
-      summary: '捕获单测 exit: 1 异常堆栈，诊断定位 radash.tryit 在空 payload 输入时未做默认兜底回退。',
-      isCorrectionBranch: true,
-    } satisfies AgentNodeData,
+    traceId: 'demo-session',
+    nodeId: 'node-sc-4',
+    parentId: 'node-sc-3',
+    type: 'node_complete',
+    gesture: 'think',
+    actor: 'Claude 3.7 (Worker)',
+    title: 'ReAct 自愈诊断分叉',
+    status: 'completed',
+    delta: '捕获单测 exit: 1 异常堆栈，诊断定位 radash.tryit 在空 payload 输入时未做默认兜底回退。',
+    isCorrectionBranch: true,
   },
   {
-    id: 'node-sc-5',
-    type: 'agentNode',
-    position: { x: 1170, y: 340 },
-    data: {
-      title: '自愈补丁实施',
-      actor: 'Claude 3.7 (Worker)',
-      gesture: 'edit',
-      status: 'completed',
-      summary: '注入防御性空值 fallback，完善 pipeline 边界强契约校验，消除脏数据逃逸风险。',
-      isCorrectionBranch: true,
-    } satisfies AgentNodeData,
+    traceId: 'demo-session',
+    nodeId: 'node-sc-5',
+    parentId: 'node-sc-4',
+    type: 'node_complete',
+    gesture: 'edit',
+    actor: 'Claude 3.7 (Worker)',
+    title: '自愈补丁实施',
+    status: 'completed',
+    delta: '注入防御性空值 fallback，完善 pipeline 边界强契约校验，消除脏数据逃逸风险。',
+    isCorrectionBranch: true,
   },
   {
-    id: 'node-sc-6',
-    type: 'agentNode',
-    position: { x: 1450, y: 340 },
-    data: {
-      title: '自愈回归验证',
-      actor: 'Claude 3.7 (Worker)',
-      gesture: 'bash',
-      status: 'completed',
-      summary: '重新执行 pnpm test:pipeline -> 156 passed, 0 failed (1.78s) 单测全部通过！',
-      isCorrectionBranch: true,
-      observation: {
-        exitCode: 0,
-        output: ['Tests: 156 passed, 156 total', 'Time: 1.78s'],
-      },
-    } satisfies AgentNodeData,
+    traceId: 'demo-session',
+    nodeId: 'node-sc-6',
+    parentId: 'node-sc-5',
+    type: 'node_complete',
+    gesture: 'bash',
+    actor: 'Claude 3.7 (Worker)',
+    title: '自愈回归验证',
+    status: 'completed',
+    delta: '重新执行 pnpm test:pipeline -> 156 passed, 0 failed (1.78s) 单测全部通过！',
+    isCorrectionBranch: true,
+    observation: {
+      exitCode: 0,
+      output: ['Tests: 156 passed, 156 total', 'Time: 1.78s'],
+    },
   },
   {
-    id: 'node-sc-7',
-    type: 'agentNode',
-    position: { x: 1730, y: 180 },
-    data: {
-      title: '自愈收敛与 Git 门禁审查',
-      actor: 'Human Operator',
-      gesture: 'gate',
-      status: 'gate',
-      summary: '单测自愈闭环，重新连回主干因果链。触发 Git 提交审查与全机门禁放行。',
-    } satisfies AgentNodeData,
+    traceId: 'demo-session',
+    nodeId: 'node-sc-7',
+    parentId: 'node-sc-6',
+    type: 'node_complete',
+    gesture: 'gate',
+    actor: 'Human Operator',
+    title: '自愈收敛与 Git 门禁审查',
+    status: 'gate',
+    delta: '单测自愈闭环，重新连回主干因果链。触发 Git 提交审查与全机门禁放行。',
   },
 ]
 
-// 初始默认连线
-const defaultMockEdges: Edge[] = [
-  {
-    id: 'e-node-sc-1-node-sc-2',
-    source: 'node-sc-1',
-    target: 'node-sc-2',
-    type: 'smoothstep',
-    style: { stroke: '#8F887D', strokeWidth: 1.5 },
-  },
-  {
-    id: 'e-node-sc-2-node-sc-3',
-    source: 'node-sc-2',
-    target: 'node-sc-3',
-    type: 'smoothstep',
-    style: { stroke: '#8F887D', strokeWidth: 1.5 },
-  },
-  {
-    id: 'e-node-sc-3-node-sc-4',
-    source: 'node-sc-3',
-    target: 'node-sc-4',
-    type: 'smoothstep',
-    style: { stroke: '#D97706', strokeWidth: 1.5, strokeDasharray: '5 4' },
-  },
-  {
-    id: 'e-node-sc-4-node-sc-5',
-    source: 'node-sc-4',
-    target: 'node-sc-5',
-    type: 'smoothstep',
-    style: { stroke: '#D97706', strokeWidth: 1.5, strokeDasharray: '5 4' },
-  },
-  {
-    id: 'e-node-sc-5-node-sc-6',
-    source: 'node-sc-5',
-    target: 'node-sc-6',
-    type: 'smoothstep',
-    style: { stroke: '#D97706', strokeWidth: 1.5, strokeDasharray: '5 4' },
-  },
-  {
-    id: 'e-node-sc-6-node-sc-7',
-    source: 'node-sc-6',
-    target: 'node-sc-7',
-    type: 'smoothstep',
-    style: { stroke: '#8F887D', strokeWidth: 1.5 },
-  },
-]
+// 初始默认静态节点与连线（由 defaultMockEvents 直出）
+const initialDefaultFlow = eventsToFlowNodesAndEdges(defaultMockEvents)
+const defaultMockNodes: Node[] = initialDefaultFlow.nodes
+const defaultMockEdges: Edge[] = initialDefaultFlow.edges
+
+/**
+ * 画布视口控制器子组件 (CanvasViewportController)
+ * 挂载于 ReactFlowProvider / ReactFlow 内部，拥有 useReactFlow 上下文
+ * 在首屏加载、翻页切片、折叠切换、重置及会话切换时自动居中聚焦 fitView，根治白屏与视口飘走
+ */
+interface CanvasViewportControllerProps {
+  activeSessionId: string
+  windowStart: number
+  windowEnd: number
+  isFoldingEnabled: boolean
+  resetKey: number
+}
+
+function CanvasViewportController({
+  activeSessionId,
+  windowStart,
+  windowEnd,
+  isFoldingEnabled,
+  resetKey,
+}: CanvasViewportControllerProps) {
+  const { fitView } = useReactFlow()
+  const isInitialRef = useRef(true)
+
+  useEffect(() => {
+    // 无论是初次挂载、切会话、翻页还是折叠切换，等 React Flow 完成 DOM 布局后平滑聚焦
+    const timer = setTimeout(() => {
+      fitView({ padding: 0.2, duration: isInitialRef.current ? 0 : 300 })
+      isInitialRef.current = false
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [activeSessionId, windowStart, windowEnd, isFoldingEnabled, resetKey, fitView])
+
+  return null
+}
 
 function MainFlowCanvas() {
   const {
@@ -211,12 +204,39 @@ function MainFlowCanvas() {
   // 窗口化分页常数：DOM 节点安全视口窗口（Window Size = 50）
   const WINDOW_SIZE = 50
 
+  // 缓存当前会话的原始事件流水 (rawEvents)，作为同构折叠与拓扑重算的单一真理源
+  const [rawEvents, setRawEvents] = useState<TelemetryEvent[]>(defaultMockEvents)
+  const [resetKey, setResetKey] = useState<number>(0)
+
   // 时光回溯状态机 (仅在非 running 态展示与交互)
   const [timelineStep, setTimelineStep] = useState<number>(0)
   const [isTimelinePlaying, setIsTimelinePlaying] = useState(false)
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1)
   const [isFoldingEnabled, setIsFoldingEnabled] = useState(true)
   const playbackTimerRef = useRef<number | null>(null)
+
+  // 依据 isFoldingEnabled 响应式派生聚合后的 events 与 nodes/edges
+  const displayEvents = useMemo(() => {
+    if (!rawEvents || rawEvents.length === 0) return []
+    return aggregateConsecutiveToolEvents(rawEvents, { enabled: isFoldingEnabled })
+  }, [rawEvents, isFoldingEnabled])
+
+  const { derivedNodes, derivedEdges } = useMemo(() => {
+    if (!displayEvents || displayEvents.length === 0) {
+      return { derivedNodes: [], derivedEdges: [] }
+    }
+    const { nodes: fn, edges: fe } = eventsToFlowNodesAndEdges(displayEvents)
+    return { derivedNodes: fn, derivedEdges: fe }
+  }, [displayEvents])
+
+  // 当派生节点与边变更时，同步更新至 React Flow 状态
+  useEffect(() => {
+    if (derivedNodes.length > 0) {
+      setNodes(derivedNodes)
+      setEdges(derivedEdges)
+    }
+  }, [derivedNodes, derivedEdges, setNodes, setEdges])
+
   const totalNodesCount = nodes.length
 
   // 判断当前选中的会话是否处于活跃运行/待审批状态
@@ -327,7 +347,7 @@ function MainFlowCanvas() {
     })
 
     return [...demoItems, ...localItems]
-  }, [bridge.localSessions])
+  }, [bridge.localSessions, sessionsList])
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024] overflow-hidden">
@@ -362,8 +382,7 @@ function MainFlowCanvas() {
 
               // 3. 演示沙盒会话直通
               if (sid === 'demo-session' || sid === 'default-session') {
-                setNodes(defaultMockNodes)
-                setEdges(defaultMockEdges)
+                setRawEvents(defaultMockEvents)
                 setWatermark(BASE_CONTEXT_WATERMARK)
                 return
               }
@@ -372,21 +391,14 @@ function MainFlowCanvas() {
               const text = await bridge.fetchSessionTranscript(sid)
               if (text && text.trim()) {
                 const parsed = parseTranscript(text)
-                const events = aggregateConsecutiveToolEvents(parsed.events, { enabled: isFoldingEnabled })
-                const { nodes: flowNodes, edges: flowEdges } = eventsToFlowNodesAndEdges(events)
-
-                setNodes(flowNodes)
-                setEdges(flowEdges)
+                setRawEvents(parsed.events)
                 setWatermark(BASE_CONTEXT_WATERMARK)
               }
             }}
             onImportJsonl={(content) => {
               const parsed = parseTranscript(content)
-              const events = aggregateConsecutiveToolEvents(parsed.events, { enabled: true })
-              const { nodes: flowNodes, edges: flowEdges } = eventsToFlowNodesAndEdges(events)
-              setActiveSessionId(parsed.session.sessionId || `session-${Date.now()}`)
-              setNodes(flowNodes)
-              setEdges(flowEdges)
+              setActiveSessionId(parsed.session.sessionId || parsed.session.id || `session-${Date.now()}`)
+              setRawEvents(parsed.events)
               setWatermark(BASE_CONTEXT_WATERMARK)
             }}
             isCollapsed={isSidebarCollapsed}
@@ -478,7 +490,7 @@ function MainFlowCanvas() {
               <div className="flex items-center space-x-2 text-[11px] font-mono text-[#8F887D] shrink-0 ml-2">
                 <span className="flex items-center space-x-1">
                   <span className="text-[#1E2024] font-medium">
-                    {activeSessionMeta?.nodeCount ?? nodes.length}
+                    {nodes.length}
                   </span>
                   <span>步节点</span>
                 </span>
@@ -529,6 +541,13 @@ function MainFlowCanvas() {
                   maxZoom={1.5}
                 >
                   <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
+                  <CanvasViewportController
+                    activeSessionId={activeSessionId}
+                    windowStart={windowStart}
+                    windowEnd={windowEnd}
+                    isFoldingEnabled={isFoldingEnabled}
+                    resetKey={resetKey}
+                  />
                 </ReactFlow>
 
                 {/* 长链路滑动窗口状态浮标与快速翻页胶囊 (当总节点 > 50 时展示) */}
@@ -613,6 +632,8 @@ function MainFlowCanvas() {
                   setContextMenu(null)
                   setIsTimelinePlaying(false)
                   resetStream()
+                  setRawEvents(defaultMockEvents)
+                  setResetKey((k) => k + 1)
                 }}
                 onTogglePlay={() => {
                   if (isTimelinePlaying) {
