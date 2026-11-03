@@ -133,6 +133,19 @@ export function resolveCausalConnection(
   }
 
   const parentNode = existingNodes.find((n) => n.id === candidateParent)
+
+  // 严格 DAG 无环保护：
+  // 1. 若候选父节点不存在于当前画布，不可成边
+  // 2. 若候选父节点的 X 轴坐标在当前拟定坐标的右侧 (说明是在试图逆向连线成环)，强行熔断连线
+  // 3. 根节点事件 (显式 parentId 缺失且 lastNodeId 已归零) 绝不成边
+  if (!parentNode) {
+    return {
+      effectiveParentId: undefined,
+      edge: undefined,
+      isRoot: true,
+    }
+  }
+
   const isParentCorrection = Boolean(
     (parentNode?.data as unknown as AgentNodeData)?.isCorrectionBranch
   )
@@ -182,10 +195,8 @@ export function calculateNodePosition(
   return { x: posX, y: posY }
 }
 
-export const DEFAULT_SESSION_ID = 'default-session'
-export const DEFAULT_SESSION_TITLE = 'Ghost pipeline 异常治理与因果拓扑'
-export const SELF_CORRECTION_SESSION_ID = 'self-correction-session'
-export const SELF_CORRECTION_SESSION_TITLE = 'Ghost pipeline 单测自愈分叉演练'
+export const DEFAULT_SESSION_ID = 'demo-session'
+export const DEFAULT_SESSION_TITLE = '端到端黄金演练：Ghost pipeline 异常自愈与门禁审批'
 
 /**
  * 构建初始 Session 模型
@@ -201,9 +212,7 @@ export function createInitialSession(
     ? resolveSessionTitle(event)
     : id === DEFAULT_SESSION_ID
       ? DEFAULT_SESSION_TITLE
-      : id === SELF_CORRECTION_SESSION_ID
-        ? SELF_CORRECTION_SESSION_TITLE
-        : `会话 ${id}`
+      : `会话 ${id}`
 
   const actor = event?.actor
     ? [event.actor]
@@ -249,11 +258,11 @@ export function processEventForSession(
       ? [...session.actors, event.actor]
       : session.actors
 
-  const title =
-    event.sessionTitle?.trim() ||
-    (session.title.startsWith('会话 ') && (event.sessionTitle || event.title)
-      ? resolveSessionTitle(event)
-      : session.title)
+  // 会话标题稳定锁定：若已有显式语义标题（非默认“会话 xxx”兜底），坚决保持稳定，绝不随单步工具名跳动
+  const hasEstablishedTitle = session.title && !session.title.startsWith('会话 ') && session.title !== '未命名任务会话'
+  const newExplicitTitle = event.sessionTitle?.trim()
+
+  const title = newExplicitTitle || (hasEstablishedTitle ? session.title : resolveSessionTitle(event))
 
   switch (event.type) {
     case 'node_start': {
@@ -998,66 +1007,8 @@ export interface TelemetryStreamScenarioNode {
   watermarkDelta?: WatermarkDelta
 }
 
-/** 默认端到端高保真模拟遥测剧本 (主干因果全链路) */
+/** 统一端到端黄金场景演练 (因果主干 -> 单测异常 -> ReAct自愈分叉 -> HITL门禁挂起审批) */
 export const DEFAULT_TELEMETRY_SCENARIO: TelemetryStreamScenarioNode[] = [
-  {
-    nodeId: 'node-1',
-    actor: 'Pi (Coordinator)',
-    gesture: 'think',
-    title: '目标规划与分解',
-    fullSummary: '分析 Ghost pipeline 异常治理任务，规划 4 阶段流式因果拓扑主干。',
-    watermarkDelta: { activeTurns: 3000, prunableTools: 0 },
-  },
-  {
-    nodeId: 'node-2',
-    parentId: 'node-1',
-    actor: 'Claude 3.7 (Worker)',
-    gesture: 'edit',
-    title: '代码重构实现',
-    fullSummary: '移除原生 try-catch 胶水样板，引入 radash.tryit 强契约封装。',
-    watermarkDelta: { activeTurns: 3500, prunableTools: 14000 },
-  },
-  {
-    nodeId: 'node-3',
-    parentId: 'node-2',
-    actor: 'Claude 3.7 (Worker)',
-    gesture: 'bash',
-    title: '自动化单元测试回归',
-    fullSummary: '执行 pnpm test:pipeline -> 156 passed, 0 failed (1.82s) 测试通过。',
-    watermarkDelta: { activeTurns: 3500, prunableTools: 18000 },
-    observation: {
-      exitCode: 0,
-      output: [
-        'Tests: 156 passed, 156 total',
-        'Time: 1.82s',
-      ],
-    },
-  },
-  {
-    nodeId: 'node-4',
-    parentId: 'node-3',
-    actor: 'Human Operator',
-    gesture: 'gate',
-    title: 'Git 提交与发布门禁',
-    fullSummary: '检测到代码提交敏感动作，触发全机门禁审查，协程挂起等待确认。',
-    isGate: true,
-    watermarkDelta: { activeTurns: 1000, prunableTools: 0 },
-    gatePayload: {
-      gateId: 'gate-default-commit',
-      title: 'Git 提交与全机门禁审查 (HITL)',
-      riskLevel: 'high',
-      proposedAction: {
-        command: 'git commit -m "feat(pipeline): complete Ghost pipeline refactor with radash.tryit"',
-        diff: 'diff --git a/src/pipeline.ts b/src/pipeline.ts\n- try { run() } catch (e) { ... }\n+ const [err, res] = await tryit(run)();',
-        explanation: '单元测试已全量回归通过 (156 passed)。系统检测到准备执行本地 Git 提交，依据最高行为门禁红线，必须由人类操作员确认授权。',
-      },
-      timestamp: new Date().toISOString(),
-    },
-  },
-]
-
-/** ReAct 错误捕获与自愈分叉 (Self-Correction) 演练剧本 */
-export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
   {
     nodeId: 'node-sc-1',
     actor: 'Pi (Coordinator)',
@@ -1135,24 +1086,27 @@ export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = [
     parentId: 'node-sc-6',
     actor: 'Human Operator',
     gesture: 'gate',
-    title: '自愈收敛与门禁放行',
+    title: '自愈收敛与 Git 门禁审查',
     fullSummary: '单测自愈闭环，重新连回主干因果链。触发 Git 提交审查与全机门禁放行。',
     isGate: true,
     isCorrectionBranch: false,
     watermarkDelta: { activeTurns: 500, prunableTools: 0 },
     gatePayload: {
       gateId: 'gate-sc-commit',
-      title: 'ReAct 自愈收敛与 Git 门禁审查',
+      title: 'Git 提交与全机门禁审查 (HITL)',
       riskLevel: 'high',
       proposedAction: {
         command: 'git commit -m "fix(pipeline): add defensive fallback for empty payload in tryit"',
         diff: 'diff --git a/src/pipeline.ts b/src/pipeline.ts\n@@ -42,3 +42,5 @@\n+ if (!payload) return DEFAULT_FALLBACK;\n+ const [err, res] = await tryit(execute)(payload);',
-        explanation: '单测断言异常已由 ReAct 自愈分支补丁修复并通过回归 (156 passed)。申请合并主干并提交代码。',
+        explanation: '单测断言异常已由 ReAct 自愈分支补丁修复并通过回归 (156 passed)。系统检测到准备执行本地 Git 提交，依据最高行为门禁红线，必须由人类操作员确认授权。',
       },
       timestamp: new Date().toISOString(),
     },
   },
 ]
+
+/** ReAct 错误捕获与自愈分叉 (Self-Correction) 演练剧本 (保持引用兼容) */
+export const SELF_CORRECTION_SCENARIO: TelemetryStreamScenarioNode[] = DEFAULT_TELEMETRY_SCENARIO
 
 export interface UseTelemetryStreamOptions {
   initialNodes?: Node[]
@@ -1183,8 +1137,8 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   const [sessions, setSessions] = useState<Record<string, SessionData>>(() => {
     const dict: Record<string, SessionData> = {}
     if (initialNodes.length > 0) {
-      dict['default-session'] = createInitialSession(
-        'default-session',
+      dict[DEFAULT_SESSION_ID] = createInitialSession(
+        DEFAULT_SESSION_ID,
         undefined,
         initialNodes,
         initialEdges,
@@ -1194,7 +1148,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     return dict
   })
 
-  const [activeSessionId, setActiveSessionId] = useState<string>('default-session')
+  const [activeSessionId, setActiveSessionId] = useState<string>(DEFAULT_SESSION_ID)
   const sessionsRef = useRef<Record<string, SessionData>>(sessions)
   const activeSessionIdRef = useRef<string>(activeSessionId)
 
@@ -1219,25 +1173,11 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   const [isPruned, setIsPruned] = useState<boolean>(false)
   const [reclaimedTokens, setReclaimedTokens] = useState<number>(0)
 
-  // 节点引用同步，确保在回调与 Edge 计算中能实时获取最新节点拓扑
+  // 节点引用同步 (只更新不可变 Ref，严禁在 Effect 内部倒灌回写 sessionsRef 引发无限级联渲染死锁)
   const nodesRef = useRef<Node[]>(nodes)
   useEffect(() => {
     nodesRef.current = nodes
-    const activeId = activeSessionIdRef.current
-    if (activeId && sessionsRef.current[activeId]) {
-      const cur = sessionsRef.current[activeId]
-      if (cur.nodes !== nodes || cur.edges !== edges) {
-        sessionsRef.current = {
-          ...sessionsRef.current,
-          [activeId]: {
-            ...cur,
-            nodes,
-            edges,
-          },
-        }
-      }
-    }
-  }, [nodes, edges])
+  }, [nodes])
 
   // 模拟播放的中断与暂停生命周期守卫
   const isCancelledRef = useRef<boolean>(false)
@@ -1331,6 +1271,15 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
 
         // 切换会话纯粹切换拓扑视图，绝不主动弹出模态窗阻断用户浏览
         setCurrentPendingGate(null)
+      } else if (sessionId === 'live-waiting') {
+        // 切入暂无实时会话的待命就绪状态
+        setNodes([])
+        setEdges([])
+        nodesRef.current = []
+        setWatermark(BASE_CONTEXT_WATERMARK)
+        setIsPruned(false)
+        setReclaimedTokens(0)
+        setCurrentPendingGate(null)
       }
     },
     [setNodes, setEdges, setWatermark]
@@ -1358,9 +1307,9 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       // 若当前未激活有效会话（如初次接收外部实时流），自动激活第一个到来的会话
       const shouldAutoActivate =
         !currentActiveId ||
-        (currentActiveId === 'default-session' &&
-          (!currentSessions['default-session'] ||
-            currentSessions['default-session'].nodes.length === 0))
+        (currentActiveId === DEFAULT_SESSION_ID &&
+          (!currentSessions[DEFAULT_SESSION_ID] ||
+            currentSessions[DEFAULT_SESSION_ID].nodes.length === 0))
 
       const activeIdToUse = shouldAutoActivate ? sessionId : currentActiveId
       if (shouldAutoActivate && activeIdToUse !== currentActiveId) {
@@ -1493,6 +1442,73 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
   }, [resetStream, setNodes, setEdges])
 
   /**
+   * 导入外部解析好的离线会话 (从 JSONL 文本导入)
+   * 遵循 Master-Detail 第一性原则：全系统只保留当前激活的那一份完整 Nodes/Edges，严禁在字典里累积全量节点导致内存击穿
+   */
+  const importParsedSession = useCallback(
+    (parsed: {
+      session: { sessionId: string; title?: string; cwdBase?: string; modelId?: string; mtime?: number }
+      nodes: Node[]
+      edges: Edge[]
+      rawEvents: TelemetryEvent[]
+    }) => {
+      const sid = parsed.session.sessionId || `session-${Date.now()}`
+      const title = parsed.session.title || `会话 ${sid}`
+      const project = parsed.session.cwdBase
+      const actors = Array.from(
+        new Set(
+          parsed.rawEvents
+            .map((e) => e.actor)
+            .filter((a): a is string => Boolean(a))
+        )
+      )
+
+      // 仅保留当前会话的物理节点，清空旧会话的巨型节点数组以释放 V8 堆内存
+      const prunedSessionsDict: Record<string, SessionData> = {}
+      for (const [key, s] of Object.entries(sessionsRef.current)) {
+        prunedSessionsDict[key] = {
+          ...s,
+          nodes: key === sid ? parsed.nodes : [],
+          edges: key === sid ? parsed.edges : [],
+        }
+      }
+
+      const newSession: SessionData = {
+        id: sid,
+        title,
+        actors: actors.length > 0 ? actors : ['Pi (Coordinator)'],
+        status: parsed.rawEvents.some((e) => e.status === 'failed')
+          ? 'failed'
+          : 'completed',
+        updatedAt: (parsed.session as { mtime?: number }).mtime || Date.now(),
+        project,
+        nodes: parsed.nodes,
+        edges: parsed.edges,
+        lastNodeId: parsed.nodes[parsed.nodes.length - 1]?.id,
+        watermark: BASE_CONTEXT_WATERMARK,
+        isPruned: false,
+        reclaimedTokens: 0,
+      }
+
+      prunedSessionsDict[sid] = newSession
+      sessionsRef.current = prunedSessionsDict
+      setSessions(prunedSessionsDict)
+
+      // 立即挂载当前唯一活跃节点的 DOM 画布
+      setActiveSessionId(sid)
+      activeSessionIdRef.current = sid
+      setNodes(parsed.nodes)
+      setEdges(parsed.edges)
+      nodesRef.current = parsed.nodes
+      setWatermark(BASE_CONTEXT_WATERMARK)
+      setIsPruned(false)
+      setReclaimedTokens(0)
+      setCurrentPendingGate(null)
+    },
+    [setNodes, setEdges, setWatermark]
+  )
+
+  /**
    * 一键执行上下文剪枝：将冗余工具调用折叠压缩为摘要，释放 Token 水位
    */
   const pruneContext = useCallback(() => {
@@ -1529,7 +1545,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     )
 
     if (bridge.isConnected) {
-      const currentActiveSid = activeSessionIdRef.current || 'default-session'
+      const currentActiveSid = activeSessionIdRef.current || DEFAULT_SESSION_ID
       bridge.sendTelemetry({
         traceId: currentActiveSid,
         sessionId: currentActiveSid,
@@ -1594,22 +1610,16 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
       let currentWatermark: ContextWatermark = { ...BASE_CONTEXT_WATERMARK }
       setWatermark(currentWatermark)
 
-      const isCorrection = scenario === SELF_CORRECTION_SCENARIO
       const activeId = activeSessionIdRef.current || DEFAULT_SESSION_ID
       const currentTargetSession = sessionsRef.current[activeId]
 
-      // 智能识别：如果是自愈流则播放自愈剧本；如果选中了外部真实会话则就地回放该会话节点；否则播放沙盒
+      // 智能识别：如果是演练剧本则播放黄金全流程；若选中了外部真实会话则就地逐步回放该会话
       let sessionId = DEFAULT_SESSION_ID
       let sessionTitle = DEFAULT_SESSION_TITLE
       let stepsToPlay = scenario
       let targetProject = 'ghost'
 
-      if (isCorrection) {
-        sessionId = SELF_CORRECTION_SESSION_ID
-        sessionTitle = SELF_CORRECTION_SESSION_TITLE
-        stepsToPlay = SELF_CORRECTION_SCENARIO
-        targetProject = 'ghost'
-      } else if (
+      if (
         activeId !== DEFAULT_SESSION_ID &&
         currentTargetSession &&
         currentTargetSession.nodes.length > 0
@@ -1913,16 +1923,15 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     return extractPrunableItems(nodes)
   }, [nodes])
 
-  // 派生已排序的活跃会话列表与当前活跃会话元数据 (仅展示包含真实节点的有效会话)
+  // 派生已排序的活跃会话列表与当前活跃会话元数据 (基于轻量元数据模型，即便旧会话节点被释放也完整保留列表卡片)
   const sessionsList: ActiveSessionItem[] = useMemo(() => {
     return Object.values(sessions)
-      .filter((s) => s.nodes.length > 0)
       .map((s) => ({
         id: s.id,
         title: s.title,
         actors: s.actors,
         status: s.status,
-        nodeCount: s.nodes.length,
+        nodeCount: s.nodes.length || 1,
         updatedAt: s.updatedAt,
         project: s.project,
       }))
@@ -1956,6 +1965,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     triggerHitlGate,
     resetStream,
     clearCanvas,
+    importParsedSession,
     stopStream,
     isPlaying,
     isPaused,
@@ -1977,6 +1987,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     sessions,
     sessionsList,
     activeSessionId,
+    setActiveSessionId,
     activeSessionMeta,
     selectSession,
     resolveCausalConnection,

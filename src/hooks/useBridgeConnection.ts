@@ -17,6 +17,18 @@ export interface UseBridgeConnectionOptions {
   onGateResolved?: (gateId: string, decision: GateDecision) => void
 }
 
+export interface LocalSessionEntry {
+  id: string
+  fileName: string
+  title?: string
+  lineCount?: number
+  folder: string
+  fullPath: string
+  mtime: number
+  size: number
+  project: string
+}
+
 export interface UseBridgeConnectionReturn {
   status: BridgeConnectionStatus
   isConnected: boolean
@@ -24,8 +36,11 @@ export interface UseBridgeConnectionReturn {
   wsUrl: string
   httpUrl: string
   pendingGates: GatePromptPayload[]
+  localSessions: LocalSessionEntry[]
   resolveGate: (gateId: string, decision: GateDecision) => Promise<boolean>
   sendTelemetry: (event: TelemetryEvent) => Promise<boolean>
+  fetchLocalSessions: () => Promise<LocalSessionEntry[]>
+  fetchSessionTranscript: (id: string) => Promise<string | null>
   reconnect: () => void
 }
 
@@ -51,6 +66,7 @@ export function useBridgeConnection(
 
   const [status, setStatus] = useState<BridgeConnectionStatus>('disconnected')
   const [pendingGates, setPendingGates] = useState<GatePromptPayload[]>([])
+  const [localSessions, setLocalSessions] = useState<LocalSessionEntry[]>([])
   const [reconnectTrigger, setReconnectTrigger] = useState<number>(0)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
@@ -232,6 +248,47 @@ export function useBridgeConnection(
     [httpUrl]
   )
 
+  /**
+   * 拉取本地 Pi 存量会话列表 (默认扫描最近活跃的 30 条)
+   */
+  const fetchLocalSessions = useCallback(async (): Promise<LocalSessionEntry[]> => {
+    try {
+      const res = await fetch(`${httpUrl}/api/sessions/local?limit=30`)
+      if (!res.ok) return []
+      const data = await res.json()
+      if (data.ok && Array.isArray(data.sessions)) {
+        setLocalSessions(data.sessions)
+        return data.sessions
+      }
+      return []
+    } catch {
+      return []
+    }
+  }, [httpUrl])
+
+  /**
+   * 拉取单个本地会话的完整 JSONL 文本内容
+   */
+  const fetchSessionTranscript = useCallback(
+    async (id: string): Promise<string | null> => {
+      try {
+        const res = await fetch(`${httpUrl}/api/sessions/local/${id}/transcript`)
+        if (!res.ok) return null
+        return await res.text()
+      } catch {
+        return null
+      }
+    },
+    [httpUrl]
+  )
+
+  // 当连接上 Bridge 时，自动拉取一次本地存量会话
+  useEffect(() => {
+    if (status === 'connected') {
+      fetchLocalSessions()
+    }
+  }, [status, fetchLocalSessions])
+
   const manualReconnect = useCallback(() => {
     setReconnectTrigger((prev) => prev + 1)
   }, [])
@@ -243,8 +300,11 @@ export function useBridgeConnection(
     wsUrl,
     httpUrl,
     pendingGates,
+    localSessions,
     resolveGate,
     sendTelemetry,
+    fetchLocalSessions,
+    fetchSessionTranscript,
     reconnect: manualReconnect,
   }
 }

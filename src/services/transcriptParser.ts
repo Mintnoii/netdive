@@ -11,6 +11,7 @@ import type {
   TelemetryActor,
   TelemetryEvent,
   TelemetryGesture,
+  TelemetryObservation,
 } from '../types/telemetry'
 import { normalizeObservationOutput } from '../types/telemetry'
 import type { AgentNodeData } from '../components/AgentNode'
@@ -992,6 +993,7 @@ export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
   const BASE_Y = 180
   const BRANCH_Y = 340
 
+  // 遵循第一性真实性：取消粗暴硬截断，全量保留因果事件，依托折叠聚合自然收敛 DOM 压力
   for (let i = 0; i < events.length; i++) {
     const ev = events[i]
     const parentNode = ev.parentId ? nodeMap.get(ev.parentId) : undefined
@@ -1005,6 +1007,31 @@ export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
     currentX = posX + STEP_X
 
     const posY = ev.isCorrectionBranch ? BRANCH_Y : BASE_Y
+
+    // 严格安全脱敏：清理巨型 Base64/图片/超长单行，彻底杜绝单节点 2.5MB 撑爆 V8 堆内存导致卡死
+    let sanitizedPayload: Record<string, unknown> | undefined = undefined
+    if (ev.payload) {
+      sanitizedPayload = {}
+      for (const [k, v] of Object.entries(ev.payload)) {
+        if (typeof v === 'string') {
+          sanitizedPayload[k] = v.length > 500 ? `${v.slice(0, 300)}... [超长文本已省略 (${(v.length / 1024).toFixed(1)} KB)]` : v
+        } else {
+          sanitizedPayload[k] = v
+        }
+      }
+    }
+
+    let sanitizedObs: TelemetryObservation | undefined = undefined
+    if (ev.observation) {
+      const outputLines = normalizeObservationOutput(ev.observation.output)
+      const safeLines = outputLines.slice(0, 5).map((l) =>
+        l.length > 500 ? `${l.slice(0, 300)}... [长行已截断]` : l
+      )
+      sanitizedObs = {
+        ...ev.observation,
+        output: safeLines,
+      }
+    }
 
     let nodeSummary = ''
     if (ev.isAggregated && ev.aggregateCount) {
@@ -1022,20 +1049,25 @@ export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
         nodeSummary = `已折叠 ${ev.aggregateCount} 次连续 ${ev.gesture} 调用`
       }
     } else if (ev.delta && typeof ev.delta === 'string') {
-      nodeSummary = ev.delta
-    } else if (ev.payload) {
-      if (typeof ev.payload.command === 'string') {
-        nodeSummary = `$ ${ev.payload.command}`
-      } else if (typeof ev.payload.path === 'string') {
-        nodeSummary = `文件: ${ev.payload.path}`
-      } else if (typeof ev.payload.pattern === 'string') {
-        nodeSummary = `搜索模式: ${ev.payload.pattern}`
+      nodeSummary = ev.delta.length > 300 ? `${ev.delta.slice(0, 300)}...` : ev.delta
+    } else if (sanitizedPayload) {
+      if (typeof sanitizedPayload.command === 'string') {
+        nodeSummary = `$ ${sanitizedPayload.command}`
+      } else if (typeof sanitizedPayload.path === 'string') {
+        nodeSummary = `文件: ${sanitizedPayload.path}`
+      } else if (typeof sanitizedPayload.pattern === 'string') {
+        nodeSummary = `搜索模式: ${sanitizedPayload.pattern}`
       } else {
-        nodeSummary = JSON.stringify(ev.payload)
+        nodeSummary = JSON.stringify(sanitizedPayload)
       }
-    } else if (ev.observation?.output) {
-      const outputLines = normalizeObservationOutput(ev.observation.output)
+    } else if (sanitizedObs?.output) {
+      const outputLines = normalizeObservationOutput(sanitizedObs.output)
       nodeSummary = outputLines.slice(0, 3).join('\n')
+    }
+
+    // 确保节点摘要文本永远不超过 300 字符，消除 DOM 文本重排压力
+    if (nodeSummary.length > 300) {
+      nodeSummary = `${nodeSummary.slice(0, 280)}...`
     }
 
     const nodeData: AgentNodeData = {
@@ -1045,8 +1077,8 @@ export function eventsToFlowNodesAndEdges(events: TelemetryEvent[]): {
       status: ev.status || 'completed',
       summary: nodeSummary,
       isCorrectionBranch: ev.isCorrectionBranch,
-      observation: ev.observation,
-      payload: ev.payload,
+      observation: sanitizedObs,
+      payload: sanitizedPayload,
       assertion: ev.assertion,
       isAggregated: ev.isAggregated,
       aggregateCount: ev.aggregateCount,

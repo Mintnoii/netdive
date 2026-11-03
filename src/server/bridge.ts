@@ -1,6 +1,9 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { tryit } from 'radash'
+import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { resolve, join } from 'pathe'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket, type NodeWebSocket } from '@hono/node-ws'
 import { WebSocket } from 'ws'
@@ -375,7 +378,152 @@ export function createBridgeApp(options: {
     return c.text(raw)
   })
 
-  // 9. WebSocket 流式全双工端点 (/ws)
+  // 9. 探测本地 Pi / Claude 真实存量会话，并快速提取人类意图真名 (GET /api/sessions/local)
+  app.get('/api/sessions/local', (c) => {
+    const limit = Number(c.req.query('limit') || 30)
+    const baseDir = resolve(homedir(), '.pi/agent/sessions')
+
+    if (!existsSync(baseDir)) {
+      return c.json({ ok: true, sessions: [] })
+    }
+
+    const [err, entries] = tryit(() => {
+      const folders = readdirSync(baseDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name)
+
+      const allFiles: {
+        id: string
+        fileName: string
+        title: string
+        lineCount: number
+        folder: string
+        fullPath: string
+        mtime: number
+        size: number
+        project: string
+      }[] = []
+
+      for (const folder of folders) {
+        const folderPath = join(baseDir, folder)
+        const projectMatch =
+          folder.match(/Desktop-([A-Za-z0-9_-]+)--/) ||
+          folder.match(/workspaces-([A-Za-z0-9_-]+)--/)
+        const project = projectMatch ? projectMatch[1] : folder.replace(/^-+|-+$/g, '')
+
+        const files = readdirSync(folderPath).filter((f) => f.endsWith('.jsonl'))
+
+        for (const f of files) {
+          const p = join(folderPath, f)
+          const st = statSync(p)
+          const idMatch = f.match(/([0-9a-fA-F-]{36})\.jsonl$/)
+          const id = idMatch ? idMatch[1] : f.replace(/\.jsonl$/, '')
+
+          // 轻量快速流式探测前 20 行，精准提取人类首问意图或标题，并统计真实有效事件行数
+          let sessionTitle = f.replace(/\.jsonl$/, '')
+          let actualLineCount = 0
+
+          try {
+            const rawHead = readFileSync(p, 'utf-8')
+            const allLines = rawHead.split(/\r?\n/).filter((l) => l.trim().length > 0)
+            actualLineCount = allLines.length
+
+            for (let i = 0; i < Math.min(allLines.length, 30); i++) {
+              const line = allLines[i]
+              try {
+                const item = JSON.parse(line)
+                if (item.type === 'session' && typeof item.title === 'string' && item.title.trim()) {
+                  sessionTitle = item.title.trim()
+                  break
+                }
+                if (item.type === 'message' && item.message?.role === 'user') {
+                  const content = item.message.content
+                  let text = ''
+                  if (typeof content === 'string') {
+                    text = content
+                  } else if (Array.isArray(content)) {
+                    text = content.map((c: { text?: string }) => c.text || '').join('')
+                  }
+                  if (text.trim()) {
+                    const cleanFirstLine = text.trim().split(/\r?\n/)[0].trim()
+                    if (cleanFirstLine && !cleanFirstLine.startsWith('{') && cleanFirstLine.length > 1) {
+                      sessionTitle = cleanFirstLine.length > 38 ? `${cleanFirstLine.slice(0, 36)}...` : cleanFirstLine
+                      break
+                    }
+                  }
+                }
+              } catch {
+                // ignore
+              }
+            }
+          } catch {
+            // ignore
+          }
+
+          allFiles.push({
+            id,
+            fileName: f,
+            title: sessionTitle,
+            lineCount: actualLineCount,
+            folder,
+            fullPath: p,
+            mtime: st.mtimeMs,
+            size: st.size,
+            project,
+          })
+        }
+      }
+
+      // 按修改时间倒序排序，取前 N 个
+      return allFiles.sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+    })()
+
+    if (err) {
+      return c.json({ ok: false, error: err.message }, 500)
+    }
+
+    return c.json({
+      ok: true,
+      sessions: entries || [],
+    })
+  })
+
+  // 10. 读取单个本地存量会话的完整因果拓扑 (GET /api/sessions/local/:id/transcript)
+  app.get('/api/sessions/local/:id/transcript', (c) => {
+    const sessionId = c.req.param('id')
+    const baseDir = resolve(homedir(), '.pi/agent/sessions')
+
+    if (!existsSync(baseDir)) {
+      return c.json({ ok: false, error: 'Sessions directory not found' }, 404)
+    }
+
+    const [findErr, targetFile] = tryit(() => {
+      const folders = readdirSync(baseDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name)
+
+      for (const folder of folders) {
+        const folderPath = join(baseDir, folder)
+        const match = readdirSync(folderPath).find(
+          (f) => f.includes(sessionId) && f.endsWith('.jsonl')
+        )
+        if (match) {
+          return join(folderPath, match)
+        }
+      }
+      return null
+    })()
+
+    if (findErr || !targetFile || !existsSync(targetFile)) {
+      return c.json({ ok: false, error: `Session transcript for ${sessionId} not found` }, 404)
+    }
+
+    // 全量读取并回传完整历史流水（不再暴力截断前 150 步，交由下游 transcriptParser 精准治理巨型二进制）
+    const raw = readFileSync(targetFile, 'utf-8')
+    return c.text(raw)
+  })
+
+  // 11. WebSocket 流式全双工端点 (/ws)
   app.get(
     '/ws',
     upgradeWebSocket(() => {

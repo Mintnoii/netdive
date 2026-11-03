@@ -229,4 +229,63 @@ describe('NodeContextMenu & Node Reference Fingerprint Unit Tests', () => {
       assert.equal(NodeContextMenu.name, 'NodeContextMenu')
     })
   })
+
+  describe('5. formatSessionDiagnosticMarkdown & copySessionDiagnosticToClipboard 会话诊断现场工具', () => {
+    it('正确格式化高密度 Markdown 诊断现场，涵盖统计与最新动作', async () => {
+      const { formatSessionDiagnosticMarkdown, copySessionDiagnosticToClipboard } = await import('../types/telemetry')
+
+      const mockNodes: Node[] = [
+        {
+          id: 'n-1',
+          position: { x: 0, y: 0 },
+          data: { gesture: 'think', status: 'completed', summary: '思考拆解' },
+        },
+        {
+          id: 'n-2',
+          position: { x: 100, y: 0 },
+          data: { gesture: 'bash', status: 'failed', summary: '测试报错 exit 1' },
+        },
+        {
+          id: 'n-3',
+          position: { x: 200, y: 0 },
+          data: { gesture: 'gate', status: 'gate', summary: '等待提交确认' },
+        },
+      ]
+
+      const text = formatSessionDiagnosticMarkdown({
+        sessionMeta: {
+          id: 'sess-diag-1',
+          title: '会话诊断测试',
+          actors: ['Pi (Coordinator)', 'Claude 3.7 (Worker)'],
+          project: 'ghost',
+          status: 'gate',
+          nodeCount: 3,
+          updatedAt: Date.now(),
+        },
+        nodes: mockNodes,
+      })
+
+      assert.ok(text.includes('### 🛰️ NetDive 会话诊断现场'))
+      assert.ok(text.includes('- **会话名称**: 会话诊断测试'))
+      assert.ok(text.includes('- **会话 ID**: `sess-diag-1`'))
+      assert.ok(text.includes('- **所属工程**: `ghost`'))
+      assert.ok(text.includes('- **当前状态**: `gate` (⚠️ 1 处断言异常) (🛑 门禁待审)'))
+      assert.ok(text.includes('- **节点拓扑**: 共 3 步'))
+      assert.ok(text.includes('- **最新动作摘要**: 等待提交确认'))
+
+      // 剪贴板测试
+      let written = ''
+      const res = await copySessionDiagnosticToClipboard({
+        sessionMeta: { id: 's1', title: 't1', actors: [], status: 'completed', nodeCount: 1, updatedAt: 0 },
+        nodes: mockNodes,
+        clipboard: {
+          writeText: async (t) => {
+            written = t
+          },
+        },
+      })
+      assert.equal(res.success, true)
+      assert.ok(written.includes('### 🛰️ NetDive 会话诊断现场'))
+    })
+  })
 })

@@ -537,10 +537,6 @@ describe('useTelemetryStream & Causal DAG Multi-Session Engine', () => {
         '任务目标标题'
       )
       assert.equal(
-        resolveSessionTitle({ title: '常规标题' }),
-        '常规标题'
-      )
-      assert.equal(
         resolveSessionTitle({ sessionId: 'ghost-123' }),
         '会话 ghost-123'
       )

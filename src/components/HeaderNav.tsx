@@ -1,7 +1,7 @@
 import React from 'react'
-import { Activity, History } from 'lucide-react'
+import { Activity } from 'lucide-react'
 
-export type StudioTab = 'live' | 'replay' | 'lab'
+export type StudioTab = 'live' | 'lab'
 
 export interface HeaderNavProps {
   activeTab: StudioTab
@@ -11,7 +11,6 @@ export interface HeaderNavProps {
 
 /**
  * NetDive Studio 顶层单页 Tab 导航栏
- * 在“实时控制台 (Live Console)”与“会话时光机 (Session Replay)”之间极简切换
  */
 export const HeaderNav: React.FC<HeaderNavProps> = ({
   activeTab,
@@ -21,7 +20,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   return (
     <div className="flex items-center space-x-2">
       <div className="flex items-center p-0.5 bg-[#EFECE6] border border-[#E5E0D8] rounded-lg">
-        {/* 实时控制台 Tab */}
+        {/* 执行控制台 Tab */}
         <button
           onClick={() => onChangeTab('live')}
           className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
@@ -29,40 +28,27 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               ? 'bg-[#1E2024] text-[#FBF9F5] shadow-xs'
               : 'text-[#6E685E] hover:text-[#1E2024] hover:bg-[#F7F5F0]'
           }`}
-          title="实时拓扑、L1 确定性硬断言与 HITL 跨进程门禁"
+          title="执行拓扑、回溯时光机与操作拦截"
         >
-          <Activity className="w-3.5 h-3.5" />
-          <span>实时控制台 (Live)</span>
+          <Activity className="w-3.5 h-3.5 text-emerald-400" />
+          <span className="font-semibold">执行控制台</span>
           {bridgeConnected && (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
           )}
         </button>
 
-        {/* 会话时光机 Tab */}
-        <button
-          onClick={() => onChangeTab('replay')}
-          className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
-            activeTab === 'replay'
-              ? 'bg-[#1E2024] text-[#FBF9F5] shadow-xs'
-              : 'text-[#6E685E] hover:text-[#1E2024] hover:bg-[#F7F5F0]'
-          }`}
-          title="消费本地 Pi/Claude JSONL 真实流水，时间轴无感回放与白盒因果复盘"
-        >
-          <History className="w-3.5 h-3.5" />
-          <span>会话时光机 (Replay)</span>
-        </button>
-
-        {/* 观测实验室 Tab */}
+        {/* 上下文瘦身 Tab */}
         <button
           onClick={() => onChangeTab('lab')}
           className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
             activeTab === 'lab'
               ? 'bg-[#1E2024] text-[#FBF9F5] shadow-xs'
-              : 'text-[#6E685E] hover:text-[#1E2024] hover:bg-[#F7F5F0]'
+              : 'text-[#8E887E] hover:text-[#1E2024] hover:bg-[#F7F5F0]'
           }`}
-          title="微压缩上下文差分实验、WAL 离线指针回放与 Prompt Cache 前缀保真校验"
+          title="长上下文剪枝与压缩瘦身效果演示"
         >
-          <span>📊 观测实验室 (Lab)</span>
+          <span>上下文瘦身</span>
+          <span className="text-[10px] px-1 py-0.2 rounded bg-[#E5E0D8] text-[#6E685E] scale-90">Lab</span>
         </button>
       </div>
     </div>

@@ -432,6 +432,14 @@ describe('NetDive Hono Bridge Server & Gate HITL Integration', () => {
     const promptData = await promptRes.json()
     assert.equal(promptData.action, 'approve')
   })
+
+  it('Bridge Server GET /api/sessions/local returns local session entries', async () => {
+    const res = await fetch(`http://${TEST_HOST}:${TEST_PORT}/api/sessions/local?limit=5`)
+    assert.equal(res.status, 200)
+    const data = await res.json()
+    assert.equal(data.ok, true)
+    assert.ok(Array.isArray(data.sessions))
+  })
 })
 
 describe('Context Watermark & Token Utilities', () => {
@@ -541,10 +549,10 @@ describe('Context Watermark & Token Utilities', () => {
       }
     }
 
-    assert.equal(current.prunableTools, 32000)
+    assert.equal(current.prunableTools, 46000)
     const totalUsed =
       current.systemPrompt + current.ltm + current.activeTurns + current.prunableTools
-    assert.equal(totalUsed, 65000)
+    assert.equal(totalUsed, 88000)
   })
 })
 

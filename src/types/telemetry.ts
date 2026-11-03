@@ -348,7 +348,7 @@ export const resolveSessionId = (event?: Partial<TelemetryEvent>): string =>
 
 /**
  * 提取清晰的会话意图标题 (Session Title)
- * 声明式意图优先级：sessionTitle > taskTitle / objective > title > 兜底
+ * 严格只从 sessionTitle、taskTitle、prompt 意图中提取，坚决禁止拿单个工具名覆写会话标题
  */
 export function resolveSessionTitle(event?: Partial<TelemetryEvent>): string {
   const payload = event?.payload
@@ -360,16 +360,8 @@ export function resolveSessionTitle(event?: Partial<TelemetryEvent>): string {
 
   if (explicit) return explicit
 
-  const fallbackTitle = event?.title?.trim()
-  if (fallbackTitle) {
-    if (fallbackTitle.startsWith('$ ') && event?.project) {
-      return `${event.project}: 终端命令`
-    }
-    return fallbackTitle
-  }
-
   const sid = resolveSessionId(event)
-  return sid !== 'default-session' ? `会话 ${sid}` : '未命名任务会话'
+  return sid !== 'demo-session' && sid !== 'default-session' ? `会话 ${sid}` : '未命名任务会话'
 }
 
 /** 相对时间阶梯查表常数 */
@@ -496,6 +488,99 @@ export async function copyNodeReferenceToClipboard(params: {
   }
 
   // 2. 降级为 DOM textarea execCommand fallback (测试/非 HTTPS 环境)
+  if (typeof document !== 'undefined') {
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const succeeded = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      return { success: succeeded, text }
+    } catch {
+      return { success: false, text }
+    }
+  }
+
+  return { success: false, text }
+}
+
+/**
+ * 格式化会话诊断现场为高密度合规 Markdown 卡片 (供用户一键复制与 AI 无缝沟通)
+ */
+export function formatSessionDiagnosticMarkdown(params: {
+  sessionMeta?: ActiveSessionItem
+  nodes: Node[]
+}): string {
+  const { sessionMeta, nodes } = params
+  const title = sessionMeta?.title || '未命名会话'
+  const sid = sessionMeta?.id || 'unknown'
+  const project = sessionMeta?.project || '未标记工程'
+  const actors =
+    sessionMeta?.actors && sessionMeta.actors.length > 0
+      ? sessionMeta.actors.join(', ')
+      : '单 Agent 独立执行'
+  const status = sessionMeta?.status || 'completed'
+
+  // 统计各手势分布
+  const gestureCounts: Record<string, number> = {}
+  let failedCount = 0
+  let hasGate = false
+  let lastActionSummary = '无动作记录'
+
+  for (const n of nodes) {
+    const d = n.data as Record<string, unknown> | undefined
+    const gesture = (d?.gesture as string) || 'think'
+    gestureCounts[gesture] = (gestureCounts[gesture] || 0) + 1
+    if (d?.status === 'failed') failedCount += 1
+    if (d?.status === 'gate') hasGate = true
+    if (d?.summary && typeof d.summary === 'string') {
+      lastActionSummary = d.summary
+    }
+  }
+
+  const breakdown = Object.entries(gestureCounts)
+    .map(([g, count]) => `${g}: ${count}`)
+    .join(', ')
+
+  const lines = [
+    '### 🛰️ NetDive 会话诊断现场',
+    `- **会话名称**: ${title}`,
+    `- **会话 ID**: \`${sid}\``,
+    `- **所属工程**: \`${project}\``,
+    `- **协同主体**: ${actors}`,
+    `- **当前状态**: \`${status}\`${failedCount > 0 ? ` (⚠️ ${failedCount} 处断言异常)` : ''}${hasGate ? ' (🛑 门禁待审)' : ''}`,
+    `- **节点拓扑**: 共 ${nodes.length} 步 (${breakdown || '无步骤'})`,
+    `- **最新动作摘要**: ${lastActionSummary.slice(0, 120)}`,
+  ]
+
+  return lines.join('\n')
+}
+
+/**
+ * 复制整个会话诊断上下文到剪贴板核心逻辑
+ */
+export async function copySessionDiagnosticToClipboard(params: {
+  sessionMeta?: ActiveSessionItem
+  nodes: Node[]
+  clipboard?: { writeText: (text: string) => Promise<void> }
+}): Promise<{ success: boolean; text: string }> {
+  const text = formatSessionDiagnosticMarkdown(params)
+
+  const targetClipboard =
+    params.clipboard ?? (typeof navigator !== 'undefined' ? navigator.clipboard : undefined)
+  if (targetClipboard?.writeText) {
+    try {
+      await targetClipboard.writeText(text)
+      return { success: true, text }
+    } catch {
+      // 降级进入 fallback
+    }
+  }
+
   if (typeof document !== 'undefined') {
     try {
       const textarea = document.createElement('textarea')
