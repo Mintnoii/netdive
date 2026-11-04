@@ -601,5 +601,31 @@ export async function copySessionDiagnosticToClipboard(params: {
   return { success: false, text }
 }
 
+/** 宏观回合生命周期状态 */
+export type MacroTurnStatus = 'success' | 'failed' | 'branching' | 'gate' | 'running'
+
+/** 宏观复合回合数据契约 (Macro Turn Compound Group Contract) */
+export interface MacroTurnGroup {
+  turnId: string
+  turnIndex: number
+  title: string
+  intent: string
+  status: MacroTurnStatus
+  totalDuration?: string
+  durationMs?: number
+  tokenBreakdown?: {
+    input?: number
+    output?: number
+    total?: number
+    prunable?: number
+  }
+  toolCounts: Record<string, number>
+  subEvents: TelemetryEvent[]
+  actor?: TelemetryActor
+  hasCorrection?: boolean
+  hasFailure?: boolean
+  hasGate?: boolean
+}
+
 
 

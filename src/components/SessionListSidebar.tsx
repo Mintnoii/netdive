@@ -55,7 +55,7 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
   onToggleCollapse,
 }) => {
   const [query, setQuery] = useState('')
-  const [category, setCategory] = useState<SessionTabCategory>('demo')
+  const [category, setCategory] = useState<SessionTabCategory>('live')
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -234,7 +234,7 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
             }`}
           >
             <Activity className="w-3 h-3 text-emerald-600" />
-            <span>实时/导入</span>
+            <span>真实工作流</span>
             <span className="text-[9px] font-mono px-1 rounded-full bg-[#EDE7DC] text-[#6E685E]">
               {liveCount}
             </span>

@@ -10,12 +10,14 @@ import {
 } from 'lucide-react'
 import type { Node } from '@xyflow/react'
 import type { AgentNodeData } from './AgentNode'
+import type { TelemetryEvent } from '../types/telemetry'
 import { normalizeObservationOutput, formatNodeSummary } from '../types/telemetry'
 
 export interface NodeDetailsDrawerProps {
   isOpen: boolean
   onClose: () => void
   node: Node | null
+  event?: TelemetryEvent | null
 }
 
 /**
@@ -26,16 +28,29 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
   isOpen,
   onClose,
   node,
+  event,
 }) => {
   const [copiedPayload, setCopiedPayload] = useState(false)
 
   if (!isOpen || !node) return null
 
-  const nodeData = node.data as unknown as AgentNodeData
+  const nodeData = (node.data || {}) as unknown as AgentNodeData
+
+  // 契约解耦与 JIT 按需读取：优先从原始 TelemetryEvent 提取完整数据，降级自 nodeData 读取
+  const title = event?.title || nodeData.title || '节点执行详情'
+  const actor = event?.actor || nodeData.actor || '未知主体'
+  const gesture = event?.gesture || nodeData.gesture || 'think'
+  const status = event?.status || nodeData.status || 'completed'
+  const isCorrectionBranch = event?.isCorrectionBranch ?? nodeData.isCorrectionBranch
+  const isAggregated = event?.isAggregated ?? nodeData.isAggregated
+  const aggregateCount = event?.aggregateCount ?? nodeData.aggregateCount
+  const summary = event?.delta || nodeData.summary
+  const payload = event?.payload ?? nodeData.payload
+  const observation = event?.observation ?? nodeData.observation
 
   const copyPayload = async () => {
-    if (!nodeData.payload) return
-    const text = JSON.stringify(nodeData.payload, null, 2)
+    if (!payload) return
+    const text = JSON.stringify(payload, null, 2)
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard) {
         await navigator.clipboard.writeText(text)
@@ -48,8 +63,9 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
   }
 
   const isFailed =
-    nodeData.status === 'failed' ||
-    (nodeData.observation && nodeData.observation.exitCode !== 0)
+    status === 'failed' ||
+    status === 'rejected' ||
+    (observation && typeof observation.exitCode === 'number' && observation.exitCode !== 0)
 
   return (
     <aside className="w-96 shrink-0 h-full border-l border-[#E5E0D8] bg-[#FAF8F5] flex flex-col shadow-xl z-20 overflow-hidden animate-in slide-in-from-right duration-200">
@@ -77,10 +93,10 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
         <div className="bg-white p-3 rounded-lg border border-[#E5E0D8] space-y-2 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="font-mono text-[11px] text-[#8F887D] uppercase font-semibold">
-              {nodeData.actor || '未知主体'}
+              {actor}
             </span>
             <div className="flex items-center space-x-1.5">
-              {nodeData.status === 'completed' && (
+              {status === 'completed' && (
                 <span className="flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-300">
                   <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                   <span>已完成</span>
@@ -92,12 +108,12 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
                   <span>执行异常</span>
                 </span>
               )}
-              {nodeData.status === 'gate' && (
+              {status === 'gate' && (
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-900 border border-amber-300 animate-pulse">
                   🛑 门禁待审
                 </span>
               )}
-              {nodeData.isCorrectionBranch && (
+              {isCorrectionBranch && (
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-900 border border-amber-300">
                   <Sparkles className="w-2.5 h-2.5 inline mr-0.5 text-amber-700" />
                   自愈分叉
@@ -106,30 +122,30 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
             </div>
           </div>
 
-          <div className="font-semibold text-sm text-[#1E2024]">{nodeData.title}</div>
+          <div className="font-semibold text-sm text-[#1E2024]">{title}</div>
 
-          {nodeData.isAggregated && (
+          {isAggregated && (
             <div className="p-2 rounded bg-[#FAF8F5] border border-[#E5E0D8] text-[11px] text-[#5C5549] flex items-center space-x-1.5">
               <Layers className="w-3.5 h-3.5 text-amber-600" />
-              <span>连续调用聚合：包含 {nodeData.aggregateCount || 2} 次连续同构操作</span>
+              <span>连续调用聚合：包含 {aggregateCount || 2} 次连续同构操作</span>
             </div>
           )}
         </div>
 
         {/* 思考或输入概要 */}
-        {nodeData.summary && (
+        {summary && (
           <div className="space-y-1.5">
             <div className="text-[11px] font-mono font-medium text-[#6E685E]">
-              {nodeData.gesture === 'think' ? '思考与规划 (Thought)' : '执行摘要 (Summary)'}
+              {gesture === 'think' ? '思考与规划 (Thought)' : '执行摘要 (Summary)'}
             </div>
             <div className="p-3 bg-white border border-[#E5E0D8] rounded-lg text-[#1E2024] font-mono text-[11px] leading-relaxed whitespace-pre-wrap shadow-2xs">
-              {formatNodeSummary(nodeData.summary)}
+              {formatNodeSummary(summary)}
             </div>
           </div>
         )}
 
         {/* 工具调用入参 Payload */}
-        {nodeData.payload && Object.keys(nodeData.payload).length > 0 && (
+        {payload && Object.keys(payload).length > 0 && (
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[11px] font-mono font-medium text-[#6E685E]">
               <span>工具调用参数 (Payload)</span>
@@ -152,33 +168,33 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
               </button>
             </div>
             <pre className="p-3 bg-[#F4F0EA] border border-[#E5E0D8] rounded-lg text-[#1E2024] font-mono text-[11px] overflow-x-auto leading-normal select-all">
-              {JSON.stringify(nodeData.payload, null, 2)}
+              {JSON.stringify(payload, null, 2)}
             </pre>
           </div>
         )}
 
         {/* 执行观测与输出 (Observation) */}
-        {nodeData.observation && (
+        {observation && (
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[11px] font-mono font-medium text-[#6E685E]">
               <span>执行观测结果 (Observation)</span>
-              {typeof nodeData.observation.exitCode === 'number' && (
+              {typeof observation.exitCode === 'number' && (
                 <span
                   className={`px-1.5 py-0.2 rounded font-mono text-[10px] ${
-                    nodeData.observation.exitCode === 0
+                    observation.exitCode === 0
                       ? 'bg-emerald-100 text-emerald-800'
                       : 'bg-rose-100 text-rose-800'
                   }`}
                 >
-                  exit: {nodeData.observation.exitCode}
+                  exit: {observation.exitCode}
                 </span>
               )}
             </div>
             <div className="p-3 rounded-lg bg-[#1E2024] text-[#FBF9F5] font-mono text-[11px] max-h-56 overflow-y-auto space-y-1 shadow-inner select-all leading-relaxed">
-              {normalizeObservationOutput(nodeData.observation.output).length === 0 ? (
+              {normalizeObservationOutput(observation.output).length === 0 ? (
                 <div className="text-gray-400 italic">无输出内容</div>
               ) : (
-                normalizeObservationOutput(nodeData.observation.output).map((line, idx) => {
+                normalizeObservationOutput(observation.output).map((line, idx) => {
                   const isErr =
                     line.includes('Error') ||
                     line.includes('failed') ||

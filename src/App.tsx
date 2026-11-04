@@ -2,17 +2,29 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   ReactFlow,
   Controls,
+  MiniMap,
   ReactFlowProvider,
   useReactFlow,
   type Node,
   type Edge,
 } from '@xyflow/react'
-import { FolderGit2, Copy, Check } from 'lucide-react'
-import { AgentNode } from './components/AgentNode'
+import {
+  FolderGit2,
+  Copy,
+  Check,
+  Layers,
+  GitCommit,
+  ChevronLeft,
+  ChevronRight,
+  X,
+} from 'lucide-react'
+import { AgentNode, type AgentNodeData } from './components/AgentNode'
+import { TurnNode } from './components/TurnNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
 import { ContextStripBar } from './components/ContextStripBar'
 import { PrunableInspectorDrawer } from './components/PrunableInspectorDrawer'
 import { NodeDetailsDrawer } from './components/NodeDetailsDrawer'
+import { TurnDetailsDrawer } from './components/TurnDetailsDrawer'
 import { StateTimelineScrubber } from './components/StateTimelineScrubber'
 import { NodeContextMenu } from './components/NodeContextMenu'
 import { HeaderNav, type StudioTab } from './components/HeaderNav'
@@ -24,13 +36,21 @@ import {
   copySessionDiagnosticToClipboard,
   type ActiveSessionItem,
   type TelemetryEvent,
+  type MacroTurnGroup,
   BASE_CONTEXT_WATERMARK,
 } from './types/telemetry'
-import { parseTranscript, aggregateConsecutiveToolEvents, eventsToFlowNodesAndEdges } from './services/transcriptParser'
+import {
+  parseTranscript,
+  aggregateConsecutiveToolEvents,
+  eventsToFlowNodesAndEdges,
+  aggregateEventsIntoTurns,
+  turnsToFlowNodesAndEdges,
+} from './services/transcriptParser'
 
 // 注册自定义节点组件
 const nodeTypes = {
   agentNode: AgentNode,
+  turnNode: TurnNode,
 }
 
 // 初始默认因果事件流（涵盖 思考 -> 实现 -> 异常单测 -> ReAct 自愈分叉 -> 自愈回归 -> 门禁审批 完整闭环）
@@ -139,6 +159,8 @@ const defaultMockEdges: Edge[] = initialDefaultFlow.edges
  */
 interface CanvasViewportControllerProps {
   activeSessionId: string
+  viewMode: 'turns' | 'flat'
+  activeDrilldownTurnId: string | null
   windowStart: number
   windowEnd: number
   isFoldingEnabled: boolean
@@ -147,6 +169,8 @@ interface CanvasViewportControllerProps {
 
 function CanvasViewportController({
   activeSessionId,
+  viewMode,
+  activeDrilldownTurnId,
   windowStart,
   windowEnd,
   isFoldingEnabled,
@@ -156,13 +180,22 @@ function CanvasViewportController({
   const isInitialRef = useRef(true)
 
   useEffect(() => {
-    // 无论是初次挂载、切会话、翻页还是折叠切换，等 React Flow 完成 DOM 布局后平滑聚焦
+    // 无论是初次挂载、切会话、切换视图、进入/退出下钻、翻页还是折叠切换，等 React Flow 完成 DOM 布局后平滑聚焦
     const timer = setTimeout(() => {
-      fitView({ padding: 0.2, duration: isInitialRef.current ? 0 : 300 })
+      fitView({ padding: 0.2, minZoom: 0.65, duration: isInitialRef.current ? 0 : 300 })
       isInitialRef.current = false
     }, 50)
     return () => clearTimeout(timer)
-  }, [activeSessionId, windowStart, windowEnd, isFoldingEnabled, resetKey, fitView])
+  }, [
+    activeSessionId,
+    viewMode,
+    activeDrilldownTurnId,
+    windowStart,
+    windowEnd,
+    isFoldingEnabled,
+    resetKey,
+    fitView,
+  ])
 
   return null
 }
@@ -170,7 +203,6 @@ function CanvasViewportController({
 function MainFlowCanvas() {
   const {
     nodes,
-    edges,
     onNodesChange,
     onEdgesChange,
     isPlaying,
@@ -198,15 +230,49 @@ function MainFlowCanvas() {
   const [activeTab, setActiveTab] = useState<StudioTab>('live')
   const [isInspectorOpen, setIsInspectorOpen] = useState(false)
   const [selectedDetailsNode, setSelectedDetailsNode] = useState<Node | null>(null)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [selectedTurnForDrawer, setSelectedTurnForDrawer] = useState<MacroTurnGroup | null>(null)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [isDiagnosticCopied, setIsDiagnosticCopied] = useState(false)
 
-  // 窗口化分页常数：DOM 节点安全视口窗口（Window Size = 50）
+  // 双焦视图模式：'turns' (宏观回合) | 'flat' (全量流水)
+  const [viewMode, setViewMode] = useState<'turns' | 'flat'>('turns')
+
+  // 微观下钻选中的 Turn ID (为 null 时处于宏观总览态)
+  const [activeDrilldownTurnId, setActiveDrilldownTurnId] = useState<string | null>(null)
+
+  // 窗口化分页常数：DOM 节点安全视口窗口（仅全量平铺视图且节点数 > 50 时启用）
   const WINDOW_SIZE = 50
 
   // 缓存当前会话的原始事件流水 (rawEvents)，作为同构折叠与拓扑重算的单一真理源
   const [rawEvents, setRawEvents] = useState<TelemetryEvent[]>(defaultMockEvents)
   const [resetKey, setResetKey] = useState<number>(0)
+
+  // 初次加载时，若本地存在真实会话，自动优先激活首个真实会话，不再默认停留在演示沙盒
+  const hasAutoSwitchedRef = useRef(false)
+  useEffect(() => {
+    if (!hasAutoSwitchedRef.current && bridge.localSessions.length > 0) {
+      hasAutoSwitchedRef.current = true
+      const firstRealSession = bridge.localSessions[0]
+      setActiveSessionId(firstRealSession.id)
+      bridge.fetchSessionTranscript(firstRealSession.id).then((text) => {
+        if (text && text.trim()) {
+          const parsed = parseTranscript(text)
+          setRawEvents(parsed.events)
+          setWatermark(BASE_CONTEXT_WATERMARK)
+        }
+      })
+    }
+  }, [bridge.localSessions, bridge, setActiveSessionId, setWatermark])
+
+  // 维护全局 eventsMap，用于点击节点时按需 JIT 取出原始 TelemetryEvent 渲染详情
+  const eventsMap = useMemo(() => {
+    const map = new Map<string, TelemetryEvent>()
+    for (const ev of rawEvents) {
+      map.set(ev.nodeId, ev)
+    }
+    return map
+  }, [rawEvents])
 
   // 时光回溯状态机 (仅在非 running 态展示与交互)
   const [timelineStep, setTimelineStep] = useState<number>(0)
@@ -215,19 +281,62 @@ function MainFlowCanvas() {
   const [isFoldingEnabled, setIsFoldingEnabled] = useState(true)
   const playbackTimerRef = useRef<number | null>(null)
 
-  // 依据 isFoldingEnabled 响应式派生聚合后的 events 与 nodes/edges
-  const displayEvents = useMemo(() => {
+  // 1. 将原始流水聚合为宏观回合
+  const macroTurns = useMemo(() => {
     if (!rawEvents || rawEvents.length === 0) return []
-    return aggregateConsecutiveToolEvents(rawEvents, { enabled: isFoldingEnabled })
-  }, [rawEvents, isFoldingEnabled])
+    return aggregateEventsIntoTurns(rawEvents)
+  }, [rawEvents])
 
+  // 当仅存在 1 个交互回合（没有其他回合可对比聚合）时，直给呈现微观微观层级，消灭多余的一步点击！
+  const shouldAutoDrilldown = macroTurns.length === 1 && !activeDrilldownTurnId
+  const effectiveActiveDrilldownTurnId = shouldAutoDrilldown
+    ? macroTurns[0].turnId
+    : activeDrilldownTurnId
+
+  // 当前活跃的下钻 Turn 对象
+  const activeTurn = useMemo(() => {
+    if (!effectiveActiveDrilldownTurnId) return null
+    return macroTurns.find((t) => t.turnId === effectiveActiveDrilldownTurnId) || null
+  }, [macroTurns, effectiveActiveDrilldownTurnId])
+
+  const activeTurnIndex = useMemo(() => {
+    if (!activeTurn) return -1
+    return macroTurns.findIndex((t) => t.turnId === activeTurn.turnId)
+  }, [macroTurns, activeTurn])
+
+  // 当前下钻 Turn 的内部所有事件（全量连贯因果流，绝不切片断链）
+  const currentTurnAllEvents = useMemo(() => {
+    return activeTurn?.subEvents || []
+  }, [activeTurn])
+
+  // 2. 依据当前视图模式 (Macro Turns / Micro Drilldown / Flat Trace) 派生 React Flow 节点与边
   const { derivedNodes, derivedEdges } = useMemo(() => {
-    if (!displayEvents || displayEvents.length === 0) {
+    if (!rawEvents || rawEvents.length === 0) {
       return { derivedNodes: [], derivedEdges: [] }
     }
+
+    if (viewMode === 'turns') {
+      if (effectiveActiveDrilldownTurnId && activeTurn) {
+        // 微观下钻模式：让 currentTurnAllEvents 全量通过 eventsToFlowNodesAndEdges 排布渲染在多行蛇形网格中
+        // 确保微观内部因果边 100% 连贯，绝不分页断链
+        const { nodes: microNodes, edges: microEdges } = eventsToFlowNodesAndEdges(currentTurnAllEvents)
+        return { derivedNodes: microNodes, derivedEdges: microEdges }
+      }
+
+      // 宏观回合总览模式：渲染 Macro Turn 卡片 DAG
+      const { nodes: turnNodes, edges: turnEdges } = turnsToFlowNodesAndEdges(macroTurns, {
+        onDrillDown: (turnId) => {
+          setActiveDrilldownTurnId(turnId)
+        },
+      })
+      return { derivedNodes: turnNodes, derivedEdges: turnEdges }
+    }
+
+    // 全量流水模式 (Flat Trace)：平铺呈现原子工具调用，并支持连续同构调用折叠
+    const displayEvents = aggregateConsecutiveToolEvents(rawEvents, { enabled: isFoldingEnabled })
     const { nodes: fn, edges: fe } = eventsToFlowNodesAndEdges(displayEvents)
     return { derivedNodes: fn, derivedEdges: fe }
-  }, [displayEvents])
+  }, [rawEvents, viewMode, effectiveActiveDrilldownTurnId, activeTurn, currentTurnAllEvents, macroTurns, isFoldingEnabled])
 
   // 当派生节点与边变更时，同步更新至 React Flow 状态
   useEffect(() => {
@@ -237,38 +346,38 @@ function MainFlowCanvas() {
     }
   }, [derivedNodes, derivedEdges, setNodes, setEdges])
 
-  const totalNodesCount = nodes.length
+  const totalNodesCount = derivedNodes.length
 
   // 判断当前选中的会话是否处于活跃运行/待审批状态
   const isCurrentSessionActive = activeSessionMeta?.status === 'running' || activeSessionMeta?.status === 'gate'
 
-  // 1. 核心工业级滑动窗口投影 (Sliding Window Focus)
-  // 当会话节点超过 50 个时，以当前时间轴焦点 (timelineStep) 为中心，向前滑动提取连贯的 50 个节点视口
-  // 保证真实总步数 100% 存在，同时 DOM 节点数恒定锁死在 <= 50，彻底杜绝任何千步级长链路卡死！
+  // 判断当前是否需要在全量流水模式下启用滑动窗口保护（微观下钻内彻底消灭窗口切片）
+  const isFlatPaginationActive = viewMode === 'flat' && derivedNodes.length > WINDOW_SIZE
+
   const { windowNodes, windowEdges, windowStart, windowEnd } = useMemo(() => {
-    if (totalNodesCount <= WINDOW_SIZE) {
+    if (!isFlatPaginationActive) {
       return {
-        windowNodes: nodes,
-        windowEdges: edges,
+        windowNodes: derivedNodes,
+        windowEdges: derivedEdges,
         windowStart: 1,
-        windowEnd: totalNodesCount,
+        windowEnd: derivedNodes.length,
       }
     }
 
-    const currentFocus = timelineStep > 0 ? timelineStep : totalNodesCount
-    // 计算滑动窗口区间 [start, end]
+    const totalCount = derivedNodes.length
+    const currentFocus = timelineStep > 0 ? timelineStep : totalCount
     const halfWindow = Math.floor(WINDOW_SIZE / 2)
     let start = Math.max(0, currentFocus - halfWindow)
     let end = start + WINDOW_SIZE
 
-    if (end > totalNodesCount) {
-      end = totalNodesCount
+    if (end > totalCount) {
+      end = totalCount
       start = Math.max(0, end - WINDOW_SIZE)
     }
 
-    const sliced = nodes.slice(start, end)
+    const sliced = derivedNodes.slice(start, end)
     const slicedIds = new Set(sliced.map((n) => n.id))
-    const slicedEdges = edges.filter(
+    const slicedEdges = derivedEdges.filter(
       (e) => slicedIds.has(e.source) && slicedIds.has(e.target)
     )
 
@@ -278,17 +387,15 @@ function MainFlowCanvas() {
       windowStart: start + 1,
       windowEnd: end,
     }
-  }, [nodes, edges, timelineStep, totalNodesCount])
+  }, [isFlatPaginationActive, derivedNodes, derivedEdges, timelineStep, WINDOW_SIZE])
 
-  // 1. 彻底移除外部频繁手搓的 setCenter 运镜，杜绝主线程重排死锁，完全交由 ReactFlow 原生 fitView 矩阵引擎托管
-
-  // 2. 当会话切换或节点更新时，重置时间轴当前步数至最新步
+  // 当会话切换、视图切换、下钻切换或节点更新时，重置时间轴当前步数至最新步
   useEffect(() => {
     if (!isPlaying) {
       setTimelineStep(totalNodesCount)
       setIsTimelinePlaying(false)
     }
-  }, [totalNodesCount, isPlaying])
+  }, [totalNodesCount, isPlaying, viewMode, activeDrilldownTurnId])
 
   // 时间轴自动回放定时器驱动
   useEffect(() => {
@@ -319,6 +426,28 @@ function MainFlowCanvas() {
       }
     }
   }, [isTimelinePlaying, playbackSpeed, totalNodesCount])
+
+  // 监听 Esc 键快捷关闭详情抽屉与退出下钻
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (selectedDetailsNode) {
+          setSelectedDetailsNode(null)
+          setSelectedNodeId(null)
+          return
+        }
+        if (selectedTurnForDrawer) {
+          setSelectedTurnForDrawer(null)
+          return
+        }
+        if (activeDrilldownTurnId) {
+          setActiveDrilldownTurnId(null)
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedDetailsNode, selectedTurnForDrawer, activeDrilldownTurnId])
 
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -373,6 +502,10 @@ function MainFlowCanvas() {
             activeSessionId={activeSessionId}
             onSelectSession={async (sid) => {
               setContextMenu(null)
+              setSelectedDetailsNode(null)
+              setSelectedNodeId(null)
+              setSelectedTurnForDrawer(null)
+              setActiveDrilldownTurnId(null)
 
               // 1. 若已经是当前会话，无需重复加载
               if (activeSessionId === sid) return
@@ -396,6 +529,11 @@ function MainFlowCanvas() {
               }
             }}
             onImportJsonl={(content) => {
+              setContextMenu(null)
+              setSelectedDetailsNode(null)
+              setSelectedNodeId(null)
+              setSelectedTurnForDrawer(null)
+              setActiveDrilldownTurnId(null)
               const parsed = parseTranscript(content)
               setActiveSessionId(parsed.session.sessionId || parsed.session.id || `session-${Date.now()}`)
               setRawEvents(parsed.events)
@@ -487,12 +625,59 @@ function MainFlowCanvas() {
                 </div>
               </div>
 
-              <div className="flex items-center space-x-2 text-[11px] font-mono text-[#8F887D] shrink-0 ml-2">
+              <div className="flex items-center space-x-3 text-[11px] font-mono text-[#8F887D] shrink-0 ml-2">
+                {/* 宏观回合 / 全量流水 双焦视图切换控件 */}
+                <div className="inline-flex items-center p-0.5 rounded-lg bg-[#EAE4D9]/60 border border-[#D5CDBD]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViewMode('turns')
+                      setActiveDrilldownTurnId(null)
+                    }}
+                    className={`px-2 py-0.5 text-[11px] font-sans font-medium rounded-md transition-all cursor-pointer flex items-center space-x-1.5 ${
+                      viewMode === 'turns'
+                        ? 'bg-white text-[#1E2024] shadow-2xs font-semibold'
+                        : 'text-[#5C5549] hover:text-[#1E2024]'
+                    }`}
+                    title="宏观回合模式：按交互回合聚合呈现主干因果拓扑，支持点击下钻微观细节"
+                  >
+                    <Layers className="w-3 h-3 text-amber-700" />
+                    <span>宏观回合</span>
+                    {macroTurns.length > 0 && (
+                      <span className="text-[10px] font-mono px-1 py-0.2 rounded-full bg-[#EAE4D9] text-[#3D3831] font-bold">
+                        {macroTurns.length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViewMode('flat')
+                      setActiveDrilldownTurnId(null)
+                    }}
+                    className={`px-2 py-0.5 text-[11px] font-sans font-medium rounded-md transition-all cursor-pointer flex items-center space-x-1.5 ${
+                      viewMode === 'flat'
+                        ? 'bg-white text-[#1E2024] shadow-2xs font-semibold'
+                        : 'text-[#5C5549] hover:text-[#1E2024]'
+                    }`}
+                    title="全量流水模式：平铺呈现每一项底层原子工具调用与状态"
+                  >
+                    <GitCommit className="w-3 h-3 text-[#1E2024]" />
+                    <span>全量流水</span>
+                  </button>
+                </div>
+
+                <span className="text-[#D5CDBD]">·</span>
+
                 <span className="flex items-center space-x-1">
                   <span className="text-[#1E2024] font-medium">
-                    {nodes.length}
+                    {viewMode === 'turns'
+                      ? activeDrilldownTurnId
+                        ? `${currentTurnAllEvents.length} 步`
+                        : `${macroTurns.length} 回合`
+                      : `${totalNodesCount} 步`}
                   </span>
-                  <span>步节点</span>
+                  <span>{viewMode === 'turns' && !activeDrilldownTurnId ? '复合节点' : '原子节点'}</span>
                 </span>
                 <span className="text-[#D5CDBD]">·</span>
                 <span>{activeSessionMeta ? formatRelativeTime(activeSessionMeta.updatedAt) : '刚刚'}</span>
@@ -521,7 +706,15 @@ function MainFlowCanvas() {
                   onNodesChange={onNodesChange}
                   onEdgesChange={onEdgesChange}
                   onNodeClick={(_event, node) => {
-                    setSelectedDetailsNode(node)
+                    if (node.type === 'turnNode') {
+                      const turn = macroTurns.find((t) => t.turnId === node.id)
+                      if (turn) {
+                        setSelectedTurnForDrawer(turn)
+                      }
+                    } else {
+                      setSelectedNodeId(node.id)
+                      setSelectedDetailsNode(node)
+                    }
                   }}
                   onNodeContextMenu={(event, node) => {
                     event.preventDefault()
@@ -536,13 +729,40 @@ function MainFlowCanvas() {
                   }}
                   onMoveStart={() => setContextMenu(null)}
                   fitView
-                  fitViewOptions={{ padding: 0.2 }}
-                  minZoom={0.2}
+                  fitViewOptions={{ padding: 0.2, minZoom: 0.65 }}
+                  minZoom={0.65}
                   maxZoom={1.5}
                 >
                   <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
+                  <MiniMap
+                    className="!bg-[#FAF8F5] !border-[#E5E0D8] !rounded-xl !shadow-xs hidden md:block"
+                    maskColor="rgba(245, 240, 230, 0.6)"
+                    nodeColor={(n) => {
+                      if (n.type === 'turnNode') return '#1E2024'
+                      const gesture = (n.data as unknown as AgentNodeData)?.gesture
+                      switch (gesture) {
+                        case 'read':
+                          return '#0284C7'
+                        case 'bash':
+                          return '#059669'
+                        case 'edit':
+                          return '#2563EB'
+                        case 'memory':
+                          return '#9333EA'
+                        case 'gate':
+                          return '#D97706'
+                        case 'think':
+                        default:
+                          return '#D97706'
+                      }
+                    }}
+                    zoomable
+                    pannable
+                  />
                   <CanvasViewportController
                     activeSessionId={activeSessionId}
+                    viewMode={viewMode}
+                    activeDrilldownTurnId={activeDrilldownTurnId}
                     windowStart={windowStart}
                     windowEnd={windowEnd}
                     isFoldingEnabled={isFoldingEnabled}
@@ -550,8 +770,91 @@ function MainFlowCanvas() {
                   />
                 </ReactFlow>
 
-                {/* 长链路滑动窗口状态浮标与快速翻页胶囊 (当总节点 > 50 时展示) */}
-                {totalNodesCount > WINDOW_SIZE && (
+                {/* 微观下钻悬浮面包屑与横向穿梭控制条 */}
+                {viewMode === 'turns' && effectiveActiveDrilldownTurnId && activeTurn && (
+                  <div className="absolute top-3 left-4 z-10 flex items-center space-x-2 bg-white/95 backdrop-blur-xs border border-[#E5E0D8] rounded-xl px-3 py-1.5 shadow-sm text-xs select-none animate-in fade-in duration-150">
+                    {macroTurns.length > 1 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setActiveDrilldownTurnId(null)}
+                          className="flex items-center space-x-1.5 text-[#5C5549] hover:text-[#1E2024] hover:bg-[#F4F0EA] px-2 py-1 rounded-lg transition-colors cursor-pointer font-medium"
+                          title="返回宏观回合大盘 (按 Esc)"
+                        >
+                          <Layers className="w-3.5 h-3.5 text-[#8F887D]" />
+                          <span>全部回合</span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-[#EAE4D9] text-[#3D3831] font-semibold">
+                            {macroTurns.length}
+                          </span>
+                        </button>
+
+                        <ChevronRight className="w-3.5 h-3.5 text-[#C5BDAF] shrink-0" />
+                      </>
+                    )}
+
+                    <div className="flex items-center space-x-2">
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#1E2024] text-white tracking-wider shrink-0">
+                        Turn #{activeTurn.turnIndex}
+                      </span>
+                      <span className="font-semibold text-[#1E2024] max-w-[200px] truncate" title={activeTurn.title}>
+                        {activeTurn.title}
+                      </span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#FAF8F5] text-[#5C5549] border border-[#E5E0D8]">
+                        {currentTurnAllEvents.length} 步因果拓扑
+                      </span>
+                    </div>
+
+                    {macroTurns.length > 1 && (
+                      <>
+                        <div className="w-[1px] h-4 bg-[#E5E0D8] mx-1 shrink-0" />
+
+                        <div className="flex items-center space-x-1">
+                          <button
+                            type="button"
+                            disabled={activeTurnIndex <= 0}
+                            onClick={() => {
+                              if (activeTurnIndex > 0) {
+                                setActiveDrilldownTurnId(macroTurns[activeTurnIndex - 1].turnId)
+                              }
+                            }}
+                            className="px-2 py-1 text-[11px] font-mono rounded-lg border border-[#E5E0D8] bg-[#FAF8F5] text-[#5C5549] hover:bg-[#F4F0EA] hover:text-[#1E2024] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors flex items-center space-x-1"
+                            title={activeTurnIndex > 0 ? `切换至上一回合: Turn #${macroTurns[activeTurnIndex - 1].turnIndex}` : '已是首个回合'}
+                          >
+                            <ChevronLeft className="w-3 h-3" />
+                            <span>上个回合</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={activeTurnIndex >= macroTurns.length - 1}
+                            onClick={() => {
+                              if (activeTurnIndex < macroTurns.length - 1) {
+                                setActiveDrilldownTurnId(macroTurns[activeTurnIndex + 1].turnId)
+                              }
+                            }}
+                            className="px-2 py-1 text-[11px] font-mono rounded-lg border border-[#E5E0D8] bg-[#FAF8F5] text-[#5C5549] hover:bg-[#F4F0EA] hover:text-[#1E2024] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors flex items-center space-x-1"
+                            title={activeTurnIndex < macroTurns.length - 1 ? `切换至下一回合: Turn #${macroTurns[activeTurnIndex + 1].turnIndex}` : '已是末尾回合'}
+                          >
+                            <span>下个回合</span>
+                            <ChevronRight className="w-3 h-3" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setActiveDrilldownTurnId(null)}
+                            className="p-1 rounded-lg text-[#8F887D] hover:text-[#1E2024] hover:bg-[#F4F0EA] transition-colors cursor-pointer ml-1"
+                            title="退出微观下钻 (Esc)"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* 长链路滑动窗口状态浮标与快速翻页胶囊 (仅全量流水且总节点 > 50 时展示) */}
+                {isFlatPaginationActive && (
                   <div className="absolute top-3 right-4 z-10 flex items-center space-x-2 bg-white/95 backdrop-blur-xs border border-[#E5E0D8] rounded-lg p-1.5 shadow-xs text-xs font-mono text-[#5C5549] select-none">
                     <button
                       onClick={() => {
@@ -591,18 +894,41 @@ function MainFlowCanvas() {
                   sessionMeta={activeSessionMeta}
                   onClose={() => setContextMenu(null)}
                   onInspect={() => {
-                    setSelectedDetailsNode(contextMenu.node)
+                    if (contextMenu.node.type === 'turnNode') {
+                      const turn = macroTurns.find((t) => t.turnId === contextMenu.node.id)
+                      if (turn) setSelectedTurnForDrawer(turn)
+                    } else {
+                      setSelectedNodeId(contextMenu.node.id)
+                      setSelectedDetailsNode(contextMenu.node)
+                    }
                     setContextMenu(null)
                   }}
                 />
               )}
 
-              {/* 节点执行详情抽屉 (Node Details Drawer) */}
+              {/* 节点执行详情抽屉 (Node Details Drawer: JIT 无损还原原始数据) */}
               {selectedDetailsNode && (
                 <NodeDetailsDrawer
                   isOpen={Boolean(selectedDetailsNode)}
                   node={selectedDetailsNode}
-                  onClose={() => setSelectedDetailsNode(null)}
+                  event={selectedNodeId ? eventsMap.get(selectedNodeId) : undefined}
+                  onClose={() => {
+                    setSelectedDetailsNode(null)
+                    setSelectedNodeId(null)
+                  }}
+                />
+              )}
+
+              {/* 宏观回合微观深潜瀑布抽屉 (Turn Details Drawer) */}
+              {selectedTurnForDrawer && (
+                <TurnDetailsDrawer
+                  isOpen={Boolean(selectedTurnForDrawer)}
+                  turn={selectedTurnForDrawer}
+                  onDrillDown={(turnId) => {
+                    setActiveDrilldownTurnId(turnId)
+                    setSelectedTurnForDrawer(null)
+                  }}
+                  onClose={() => setSelectedTurnForDrawer(null)}
                 />
               )}
 
@@ -628,8 +954,14 @@ function MainFlowCanvas() {
                 isPlaying={isTimelinePlaying}
                 playbackSpeed={playbackSpeed}
                 isFoldingEnabled={isFoldingEnabled}
+                isFoldingVisible={viewMode === 'flat'}
+                unitLabel={viewMode === 'turns' && !activeDrilldownTurnId ? '回合' : '步'}
                 onResetCanvas={() => {
                   setContextMenu(null)
+                  setSelectedDetailsNode(null)
+                  setSelectedNodeId(null)
+                  setSelectedTurnForDrawer(null)
+                  setActiveDrilldownTurnId(null)
                   setIsTimelinePlaying(false)
                   resetStream()
                   setRawEvents(defaultMockEvents)

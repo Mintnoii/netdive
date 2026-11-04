@@ -7,9 +7,13 @@ import {
   formatToolTitle,
   eventsToFlowNodesAndEdges,
   aggregateConsecutiveToolEvents,
+  coalesceIncrementalEvent,
+  aggregateEventsIntoTurns,
+  turnsToFlowNodesAndEdges,
+  extractRealIntent,
 } from './transcriptParser'
 import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from './sampleTranscript'
-import type { TelemetryEvent } from '../types/telemetry'
+import type { TelemetryEvent, MacroTurnGroup } from '../types/telemetry'
 
 describe('NetDive Transcript Parser Engine', () => {
   describe('Tool name to Gesture & Title formatting', () => {
@@ -217,6 +221,108 @@ describe('NetDive Transcript Parser Engine', () => {
     })
   })
 
+  describe('Deterministic Zero-Cost Intent Extraction in Transcript Parsing', () => {
+    it('正确导出 extractRealIntent 纯函数', () => {
+      assert.equal(typeof extractRealIntent, 'function')
+    })
+
+    it('解析 Pi 思考节点时自动提纯真实意图，杜绝死板的“目标规划与分解”', () => {
+      const jsonl = [
+        JSON.stringify({
+          type: 'session',
+          id: 'test-intent-pi',
+          timestamp: '2026-11-01T10:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'msg-intent-1',
+          parentId: null,
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'thinking',
+                thinking: '好的，我现在需要先检查App切片是否有断链。接下来我会继续修复其他问题。',
+              },
+            ],
+          },
+        }),
+      ].join('\n')
+
+      const parsed = parseTranscript(jsonl)
+      assert.equal(parsed.events.length, 1)
+      const thinkEvent = parsed.events[0]
+      assert.equal(thinkEvent.gesture, 'think')
+      assert.equal(thinkEvent.title, '检查App切片是否有断链')
+    })
+
+    it('解析文本输出节点时自动提纯真实意图，杜绝死板的“决策输出与复盘”', () => {
+      const jsonl = [
+        JSON.stringify({
+          type: 'session',
+          id: 'test-intent-text',
+          timestamp: '2026-11-01T10:00:00.000Z',
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'msg-intent-2',
+          parentId: null,
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text: '准备开始补齐类型声明以通过自动化单测',
+              },
+            ],
+          },
+        }),
+      ].join('\n')
+
+      const parsed = parseTranscript(jsonl)
+      assert.equal(parsed.events.length, 1)
+      const textEvent = parsed.events[0]
+      assert.equal(textEvent.gesture, 'think')
+      assert.equal(textEvent.title, '补齐类型声明以通过自动化单测')
+    })
+
+    it('解析 Claude Code 思考与执行文本时同步提纯意图', () => {
+      const jsonl = [
+        JSON.stringify({
+          type: 'user',
+          uuid: 'user-claude-intent',
+          message: { role: 'user', content: '请检查拓扑' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          uuid: 'ast-claude-intent',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'thinking',
+                thinking: '接下来我将修复切片断链并构建产物',
+              },
+              {
+                type: 'text',
+                text: '检查完成: 确认所有节点连接桩对齐无偏移',
+              },
+            ],
+          },
+        }),
+      ].join('\n')
+
+      const parsed = parseTranscript(jsonl)
+      const thinkEv = parsed.events.find((e) => e.nodeId === 'ast-claude-intent-think-0')
+      assert(thinkEv)
+      assert.equal(thinkEv.title, '修复切片断链并构建产物')
+
+      const textEv = parsed.events.find((e) => e.nodeId === 'ast-claude-intent-text-1')
+      assert(textEv)
+      assert.equal(textEv.title, '检查完成')
+    })
+  })
+
   describe('Direct TelemetryEvent & Resilience Edge Cases', () => {
     it('passes through pre-existing TelemetryEvent records', () => {
       const rawEvents: TelemetryEvent[] = [
@@ -340,6 +446,48 @@ describe('NetDive Transcript Parser Engine', () => {
       // Node 4 折行至 Row 1 Col 0
       assert.equal(nodes[4].position.x, 50)
       assert.equal(nodes[4].position.y, 520)
+    })
+
+    it('produces lean view-model nodes without megabyte payload or observation copies', () => {
+      const heavyEvent: TelemetryEvent = {
+        traceId: 'trace-heavy',
+        nodeId: 'node-heavy-1',
+        type: 'node_complete',
+        gesture: 'bash',
+        title: '$ pnpm test',
+        status: 'completed',
+        payload: {
+          command: 'pnpm test',
+          hugeArray: Array.from({ length: 1000 }, (_, i) => `item-${i}`),
+        },
+        observation: {
+          exitCode: 0,
+          output: Array.from({ length: 500 }, (_, i) => `stdout line ${i}`),
+        },
+        assertion: {
+          passed: true,
+          triggerSelfCorrection: false,
+          triggerGate: false,
+          severity: 'info',
+        },
+      }
+
+      const { nodes } = eventsToFlowNodesAndEdges([heavyEvent])
+      assert.equal(nodes.length, 1)
+
+      const nodeData = nodes[0].data as Record<string, unknown>
+      // 必须保留轻量视图字段
+      assert.equal(nodeData.nodeId, 'node-heavy-1')
+      assert.equal(nodeData.title, '$ pnpm test')
+      assert.equal(nodeData.gesture, 'bash')
+      assert.equal(nodeData.status, 'completed')
+      assert.equal(nodeData.summary, '$ pnpm test')
+
+      // 瘦节点契约：严禁在 node.data 中携带大型 payload / observation 副本
+      assert.equal(nodeData.payload, undefined)
+      assert.equal(nodeData.observation, undefined)
+      assert.equal(nodeData.assertion, undefined)
+      assert.equal(nodeData.aggregatedEvents, undefined)
     })
   })
 
@@ -666,6 +814,287 @@ describe('NetDive Transcript Parser Engine', () => {
       assert(edgeToThink)
       assert.equal(edgeToThink.source, 'read-a')
     })
+
+    // 6) 终端轮询抑制与过渡性 Think 容忍合并
+    it('suppresses polling loops with interleaved transient thinks into a single terminal group', () => {
+      const events: TelemetryEvent[] = [
+        {
+          traceId: 'trace-poll',
+          nodeId: 'poll-1',
+          type: 'node_complete',
+          gesture: 'bash',
+          actor: 'Claude 3.7 (Worker)',
+          title: '$ orca terminal read',
+          status: 'completed',
+          payload: { command: 'orca terminal read --terminal term_354cc1cb-ac79-44e1-97ea-097479b391c6 --limit 40 --json' },
+          observation: { exitCode: 0, output: ['[running...]'] },
+        },
+        {
+          traceId: 'trace-poll',
+          nodeId: 'think-1',
+          parentId: 'poll-1',
+          type: 'node_complete',
+          gesture: 'think',
+          actor: 'Claude 3.7 (Worker)',
+          title: '决策输出与复盘',
+          status: 'completed',
+          delta: '终端正在执行构建，等待下一次检查。',
+        },
+        {
+          traceId: 'trace-poll',
+          nodeId: 'poll-2',
+          parentId: 'think-1',
+          type: 'node_complete',
+          gesture: 'bash',
+          actor: 'Claude 3.7 (Worker)',
+          title: '$ orca terminal read',
+          status: 'completed',
+          payload: { command: 'orca terminal read --terminal term_354cc1cb-ac79-44e1-97ea-097479b391c6 --limit 40 --json' },
+          observation: { exitCode: 0, output: ['[still running...]'] },
+        },
+        {
+          traceId: 'trace-poll',
+          nodeId: 'think-2',
+          parentId: 'poll-2',
+          type: 'node_complete',
+          gesture: 'think',
+          actor: 'Claude 3.7 (Worker)',
+          title: '决策输出与复盘',
+          status: 'completed',
+          delta: '命令依然未就绪，继续等待。',
+        },
+        {
+          traceId: 'trace-poll',
+          nodeId: 'poll-3',
+          parentId: 'think-2',
+          type: 'node_complete',
+          gesture: 'bash',
+          actor: 'Claude 3.7 (Worker)',
+          title: '$ orca terminal read',
+          status: 'completed',
+          payload: { command: 'orca terminal read --terminal term_354cc1cb-ac79-44e1-97ea-097479b391c6 --limit 40 --json' },
+          observation: { exitCode: 0, output: ['[success completed]'] },
+        },
+      ]
+
+      const folded = aggregateConsecutiveToolEvents(events, { enabled: true })
+      // 3 次终端轮询 + 2 次过渡 think 被完美收拢为 1 个聚合节点
+      assert.equal(folded.length, 1)
+      const agg = folded[0]
+      assert.equal(agg.isAggregated, true)
+      assert.equal(agg.aggregateCount, 3)
+      assert(agg.title?.includes('terminal: 轮询'))
+      assert(agg.title?.includes('(x3)'))
+      // 验证中间思考文本被吸收沉淀进 payload.subNotes
+      assert(Array.isArray(agg.payload?.subNotes))
+      assert.equal(agg.payload?.subNotes?.length, 2)
+      assert(agg.payload?.subNotes?.[0].includes('终端正在执行构建'))
+    })
+
+    // 7) 同一文件紧邻检视与补丁 (Read + Edit) 管道聚合
+    it('coalesces alternating read and edit on the same file into a file session node', () => {
+      const events: TelemetryEvent[] = [
+        {
+          traceId: 'trace-file',
+          nodeId: 'read-1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: telemetry.ts',
+          status: 'completed',
+          payload: { path: 'src/types/telemetry.ts' },
+          observation: { exitCode: 0, output: ['// line 1'] },
+        },
+        {
+          traceId: 'trace-file',
+          nodeId: 'edit-1',
+          parentId: 'read-1',
+          type: 'node_complete',
+          gesture: 'edit',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'edit: telemetry.ts',
+          status: 'completed',
+          payload: { path: 'src/types/telemetry.ts' },
+          observation: { exitCode: 0, output: ['+ export type NewType'] },
+        },
+        {
+          traceId: 'trace-file',
+          nodeId: 'read-2',
+          parentId: 'edit-1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: telemetry.ts',
+          status: 'completed',
+          payload: { path: 'src/types/telemetry.ts' },
+          observation: { exitCode: 0, output: ['// line 2'] },
+        },
+        {
+          traceId: 'trace-file',
+          nodeId: 'edit-2',
+          parentId: 'read-2',
+          type: 'node_complete',
+          gesture: 'edit',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'edit: telemetry.ts',
+          status: 'completed',
+          payload: { path: 'src/types/telemetry.ts' },
+          observation: { exitCode: 0, output: ['+ export type AnotherType'] },
+        },
+      ]
+
+      const folded = aggregateConsecutiveToolEvents(events, { enabled: true })
+      // 4 次读写被聚合为 1 个文件交互会话节点
+      assert.equal(folded.length, 1)
+      const agg = folded[0]
+      assert.equal(agg.isAggregated, true)
+      assert.equal(agg.aggregateCount, 4)
+      assert.equal(agg.gesture, 'edit') // 读写混合提升为 edit 手势
+      assert.equal(agg.title, 'file: telemetry.ts (2检视 + 2补丁)')
+    })
+
+    // 8) 失败或异常自愈节点发生时保持强可见性，绝不盲目折叠进同构组
+    it('isolates failure and correction nodes without blindly collapsing them into tool groups', () => {
+      const events: TelemetryEvent[] = [
+        {
+          traceId: 'tr-fail-vis',
+          nodeId: 'read-1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: config.json',
+          status: 'completed',
+          payload: { path: 'config.json' },
+        },
+        {
+          traceId: 'tr-fail-vis',
+          nodeId: 'read-2',
+          parentId: 'read-1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: config.json',
+          status: 'completed',
+          payload: { path: 'config.json' },
+        },
+        {
+          traceId: 'tr-fail-vis',
+          nodeId: 'read-fail',
+          parentId: 'read-2',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: config.json',
+          status: 'failed',
+          payload: { path: 'config.json' },
+          observation: { exitCode: 1, output: ['ENOENT: file not found'] },
+        },
+        {
+          traceId: 'tr-fail-vis',
+          nodeId: 'read-heal-1',
+          parentId: 'read-fail',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: config.json',
+          status: 'completed',
+          isCorrectionBranch: true,
+          payload: { path: 'config.json' },
+        },
+        {
+          traceId: 'tr-fail-vis',
+          nodeId: 'read-heal-2',
+          parentId: 'read-heal-1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: config.json',
+          status: 'completed',
+          isCorrectionBranch: true,
+          payload: { path: 'config.json' },
+        },
+      ]
+
+      const folded = aggregateConsecutiveToolEvents(events, { enabled: true })
+      // 应当保留：
+      // 1. 前置 2 次读取聚合 (read-1, x2)
+      // 2. 独立失败节点 (read-fail)，未被折叠吞没
+      // 3. 自愈分支中的节点保持可见（isCorrectionBranch === true 不参与普通聚合）
+      assert.equal(folded.length, 4)
+      assert.equal(folded[0].isAggregated, true)
+      assert.equal(folded[0].aggregateCount, 2)
+
+      const failNode = folded[1]
+      assert.equal(failNode.nodeId, 'read-fail')
+      assert.equal(failNode.status, 'failed')
+      assert.equal(failNode.isAggregated, undefined)
+      assert.equal(failNode.observation?.exitCode, 1)
+
+      assert.equal(folded[2].nodeId, 'read-heal-1')
+      assert.equal(folded[2].isCorrectionBranch, true)
+      assert.equal(folded[3].nodeId, 'read-heal-2')
+      assert.equal(folded[3].isCorrectionBranch, true)
+    })
+
+    // 9) coalesceIncrementalEvent 在线增量聚合纯函数验证
+    it('coalesces incremental events in-place and absorbs transient thoughts', () => {
+      const tailEvent: TelemetryEvent = {
+        traceId: 'tr-inc',
+        nodeId: 'read-1',
+        type: 'node_complete',
+        gesture: 'read',
+        title: 'read: index.ts',
+        status: 'completed',
+        payload: { path: 'src/index.ts' },
+      }
+
+      // a) 吸收过渡思考节点
+      const thinkEvent: TelemetryEvent = {
+        traceId: 'tr-inc',
+        nodeId: 'think-1',
+        parentId: 'read-1',
+        type: 'node_complete',
+        gesture: 'think',
+        title: '决策分析',
+        delta: '正在分析导出的模块',
+        status: 'completed',
+      }
+      const res1 = coalesceIncrementalEvent(tailEvent, thinkEvent)
+      assert.equal(res1.coalesced, true)
+      assert.deepEqual(res1.updatedTail.payload?.subNotes, ['正在分析导出的模块'])
+
+      // b) 吸收同构新事件
+      const nextReadEvent: TelemetryEvent = {
+        traceId: 'tr-inc',
+        nodeId: 'read-2',
+        parentId: 'think-1',
+        type: 'node_complete',
+        gesture: 'read',
+        title: 'read: index.ts',
+        status: 'completed',
+        payload: { path: 'src/index.ts' },
+      }
+      const res2 = coalesceIncrementalEvent(res1.updatedTail, nextReadEvent)
+      assert.equal(res2.coalesced, true)
+      assert.equal(res2.updatedTail.isAggregated, true)
+      assert.equal(res2.updatedTail.aggregateCount, 2)
+      assert(res2.updatedTail.title?.includes('(x2)'))
+
+      // c) 遇到异常节点坚决不吸附
+      const failEvent: TelemetryEvent = {
+        traceId: 'tr-inc',
+        nodeId: 'read-err',
+        type: 'node_complete',
+        gesture: 'read',
+        title: 'read: index.ts',
+        status: 'failed',
+        payload: { path: 'src/index.ts' },
+        observation: { exitCode: 1 },
+      }
+      const res3 = coalesceIncrementalEvent(res2.updatedTail, failEvent)
+      assert.equal(res3.coalesced, false)
+      assert.equal(res3.updatedTail.nodeId, 'read-err')
+    })
   })
 
   describe('Session Replay Timeline & Camera Tracking Mechanics', () => {
@@ -714,4 +1143,430 @@ describe('NetDive Transcript Parser Engine', () => {
       assert.equal(typeof SessionReplayPage, 'function')
     })
   })
+
+  describe('Hierarchical Focus: aggregateEventsIntoTurns', () => {
+    it('returns empty array when events list is empty or falsy', () => {
+      assert.deepEqual(aggregateEventsIntoTurns([]), [])
+    })
+
+    it('aggregates a single-turn sequence into 1 MacroTurnGroup with tool counts', () => {
+      const events: TelemetryEvent[] = [
+        {
+          traceId: 'tr-1',
+          nodeId: 'user-1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Human Operator',
+          title: '用户需求指令',
+          delta: '请运行单元测试并修复 packages/core 中的断言错误。',
+          status: 'completed',
+          timestamp: 1000,
+        },
+        {
+          traceId: 'tr-1',
+          nodeId: 'think-1',
+          parentId: 'user-1',
+          type: 'node_complete',
+          gesture: 'think',
+          actor: 'Claude 3.7 (Worker)',
+          title: '目标规划',
+          delta: '先读取测试代码并执行 pnpm test。',
+          status: 'completed',
+          timestamp: 1200,
+        },
+        {
+          traceId: 'tr-1',
+          nodeId: 'read-1',
+          parentId: 'think-1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'read: test.ts',
+          payload: { path: 'packages/core/test.ts' },
+          status: 'completed',
+          timestamp: 1400,
+        },
+        {
+          traceId: 'tr-1',
+          nodeId: 'bash-1',
+          parentId: 'read-1',
+          type: 'node_complete',
+          gesture: 'bash',
+          actor: 'Claude 3.7 (Worker)',
+          title: '$ pnpm test',
+          payload: { command: 'pnpm test' },
+          status: 'completed',
+          timestamp: 1800,
+        },
+        {
+          traceId: 'tr-1',
+          nodeId: 'edit-1',
+          parentId: 'bash-1',
+          type: 'node_complete',
+          gesture: 'edit',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'edit: test.ts',
+          payload: { path: 'packages/core/test.ts' },
+          status: 'completed',
+          timestamp: 2200,
+        },
+      ]
+
+      const turns = aggregateEventsIntoTurns(events)
+      assert.equal(turns.length, 1)
+
+      const turn = turns[0]
+      assert.equal(turn.turnIndex, 1)
+      assert.equal(turn.turnId, 'turn-1')
+      assert.equal(turn.title, 'Turn #1: 用户需求指令')
+      assert.equal(turn.intent, '请运行单元测试并修复 packages/core 中的断言错误')
+      assert.equal(turn.status, 'success')
+      assert.equal(turn.subEvents.length, 5)
+      assert.deepEqual(turn.toolCounts, {
+        read: 1,
+        bash: 1,
+        edit: 1,
+      })
+      assert.equal(turn.totalDuration, '1.2s')
+      assert(turn.tokenBreakdown)
+      assert(turn.tokenBreakdown.total! > 0)
+    })
+
+    it('correctly partitions multi-turn user interactions into separate turns', () => {
+      const events: TelemetryEvent[] = [
+        // Turn 1
+        {
+          traceId: 'tr-multi',
+          nodeId: 'user-t1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Human Operator',
+          title: '用户需求指令',
+          delta: '第一步：请检查代码格式并修复 lint 错误。',
+          status: 'completed',
+        },
+        {
+          traceId: 'tr-multi',
+          nodeId: 'bash-t1',
+          parentId: 'user-t1',
+          type: 'node_complete',
+          gesture: 'bash',
+          actor: 'Claude 3.7 (Worker)',
+          title: '$ pnpm lint',
+          payload: { command: 'pnpm lint' },
+          status: 'completed',
+        },
+        // Turn 2
+        {
+          traceId: 'tr-multi',
+          nodeId: 'user-t2',
+          parentId: 'bash-t1',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Human Operator',
+          title: '用户需求指令',
+          delta: '第二步：增加核心数据契约强校验。',
+          status: 'completed',
+        },
+        {
+          traceId: 'tr-multi',
+          nodeId: 'edit-t2',
+          parentId: 'user-t2',
+          type: 'node_complete',
+          gesture: 'edit',
+          actor: 'Claude 3.7 (Worker)',
+          title: 'edit: contract.ts',
+          payload: { path: 'src/contract.ts' },
+          status: 'completed',
+        },
+        // Turn 3
+        {
+          traceId: 'tr-multi',
+          nodeId: 'user-t3',
+          parentId: 'edit-t2',
+          type: 'node_complete',
+          gesture: 'read',
+          actor: 'Human Operator',
+          title: '用户需求指令',
+          delta: '第三步：提交本次更改。',
+          status: 'completed',
+        },
+        {
+          traceId: 'tr-multi',
+          nodeId: 'gate-t3',
+          parentId: 'user-t3',
+          type: 'node_complete',
+          gesture: 'gate',
+          actor: 'Human Operator',
+          title: 'Git 门禁审查',
+          status: 'gate',
+        },
+      ]
+
+      const turns = aggregateEventsIntoTurns(events)
+      assert.equal(turns.length, 3)
+
+      assert.equal(turns[0].turnIndex, 1)
+      assert.equal(turns[0].intent, '第一步：请检查代码格式并修复 lint 错误')
+      assert.deepEqual(turns[0].toolCounts, { bash: 1 })
+      assert.equal(turns[0].status, 'success')
+
+      assert.equal(turns[1].turnIndex, 2)
+      assert.equal(turns[1].intent, '第二步：增加核心数据契约强校验')
+      assert.deepEqual(turns[1].toolCounts, { edit: 1 })
+      assert.equal(turns[1].status, 'success')
+
+      assert.equal(turns[2].turnIndex, 3)
+      assert.equal(turns[2].intent, '第三步：提交本次更改')
+      assert.equal(turns[2].status, 'gate')
+      assert.equal(turns[2].hasGate, true)
+    })
+
+    it('identifies branching status when self-correction occurred', () => {
+      const events: TelemetryEvent[] = [
+        {
+          traceId: 'tr-branch',
+          nodeId: 'think-init',
+          type: 'node_complete',
+          gesture: 'think',
+          title: '启动重构',
+          delta: '开始执行代码重构。',
+          status: 'completed',
+        },
+        {
+          traceId: 'tr-branch',
+          nodeId: 'bash-fail',
+          parentId: 'think-init',
+          type: 'node_complete',
+          gesture: 'bash',
+          title: '$ pnpm test',
+          status: 'failed',
+          observation: { exitCode: 1, output: ['AssertionError'] },
+        },
+        {
+          traceId: 'tr-branch',
+          nodeId: 'think-correct',
+          parentId: 'bash-fail',
+          type: 'node_complete',
+          gesture: 'think',
+          title: '自愈诊断',
+          delta: '修复空指针异常。',
+          isCorrectionBranch: true,
+          status: 'completed',
+        },
+        {
+          traceId: 'tr-branch',
+          nodeId: 'bash-verify',
+          parentId: 'think-correct',
+          type: 'node_complete',
+          gesture: 'bash',
+          title: '$ pnpm test',
+          isCorrectionBranch: true,
+          status: 'completed',
+          observation: { exitCode: 0, output: ['10 passed'] },
+        },
+      ]
+
+      const turns = aggregateEventsIntoTurns(events)
+      assert.equal(turns.length, 1)
+      assert.equal(turns[0].status, 'branching')
+      assert.equal(turns[0].hasCorrection, true)
+      assert.equal(turns[0].hasFailure, true)
+    })
+
+    it('identifies failed status when error remains unrecovered', () => {
+      const events: TelemetryEvent[] = [
+        {
+          traceId: 'tr-fail',
+          nodeId: 'think-1',
+          type: 'node_complete',
+          gesture: 'think',
+          title: '执行构建',
+          status: 'completed',
+        },
+        {
+          traceId: 'tr-fail',
+          nodeId: 'bash-build',
+          parentId: 'think-1',
+          type: 'node_complete',
+          gesture: 'bash',
+          title: '$ pnpm build',
+          status: 'failed',
+          observation: { exitCode: 1, output: ['Build failed: syntax error'] },
+        },
+      ]
+
+      const turns = aggregateEventsIntoTurns(events)
+      assert.equal(turns.length, 1)
+      assert.equal(turns[0].status, 'failed')
+    })
+
+    it('aggregates realistic Pi JSONL sample accurately', () => {
+      const parsed = parseTranscript(REALISTIC_PI_TRANSCRIPT_SAMPLE)
+      const turns = aggregateEventsIntoTurns(parsed.events)
+
+      assert.equal(turns.length, 1)
+      const turn = turns[0]
+      assert.equal(turn.turnIndex, 1)
+      assert.equal(turn.turnId, 'turn-1')
+      assert(turn.intent.includes('Ghost 数据清洗流'))
+      // 包含 read, bash, edit 工具
+      assert(turn.toolCounts.read >= 1)
+      assert(turn.toolCounts.bash >= 2)
+      assert(turn.toolCounts.edit >= 1)
+      assert.equal(turn.status, 'branching')
+      assert.equal(turn.hasCorrection, true)
+    })
+  })
+
+  describe('Hierarchical Focus: turnsToFlowNodesAndEdges', () => {
+    it('maps MacroTurnGroups to React Flow nodes with type turnNode and connecting edges', () => {
+      const turns: MacroTurnGroup[] = [
+        {
+          turnId: 'turn-1',
+          turnIndex: 1,
+          title: 'Turn #1: 需求分析',
+          intent: '分析重构需求',
+          status: 'success',
+          totalDuration: '800ms',
+          toolCounts: { read: 2 },
+          subEvents: [],
+        },
+        {
+          turnId: 'turn-2',
+          turnIndex: 2,
+          title: 'Turn #2: 自愈实施',
+          intent: '修复单测异常',
+          status: 'branching',
+          totalDuration: '1.4s',
+          toolCounts: { bash: 2, edit: 1 },
+          subEvents: [],
+        },
+        {
+          turnId: 'turn-3',
+          turnIndex: 3,
+          title: 'Turn #3: 门禁审查',
+          intent: '请求人工放行',
+          status: 'gate',
+          totalDuration: '200ms',
+          toolCounts: {},
+          subEvents: [],
+        },
+      ]
+
+      const { nodes, edges } = turnsToFlowNodesAndEdges(turns)
+      assert.equal(nodes.length, 3)
+      assert.equal(edges.length, 2)
+
+      // 验证节点类型均为 'turnNode'
+      for (const n of nodes) {
+        assert.equal(n.type, 'turnNode')
+      }
+
+      // 验证坐标排版
+      assert.equal(nodes[0].position.x, 50)
+      assert.equal(nodes[0].position.y, 180)
+      assert.equal(nodes[1].position.x, 50 + 360)
+      assert.equal(nodes[1].position.y, 180)
+
+      // 验证连接边
+      assert.equal(edges[0].source, 'turn-1')
+      assert.equal(edges[0].target, 'turn-2')
+      assert.equal(edges[0].type, 'smoothstep')
+      // turn-2 是 branching，连线带有动画与琥珀金
+      assert.equal(edges[0].animated, true)
+      assert.equal(edges[0].style?.stroke, '#D97706')
+
+      assert.equal(edges[1].source, 'turn-2')
+      assert.equal(edges[1].target, 'turn-3')
+    })
+
+    it('adapts node positions dynamically without collision when turns are expanded', () => {
+      const turns: MacroTurnGroup[] = [
+        {
+          turnId: 'turn-1',
+          turnIndex: 1,
+          title: 'Turn #1: 规划与阅读',
+          intent: '阅读目标代码',
+          status: 'success',
+          totalDuration: '500ms',
+          toolCounts: { read: 2 },
+          subEvents: [],
+        },
+        {
+          turnId: 'turn-2',
+          turnIndex: 2,
+          title: 'Turn #2: 修复与测试',
+          intent: '执行单测自愈',
+          status: 'success',
+          totalDuration: '1.2s',
+          toolCounts: { bash: 1 },
+          subEvents: [],
+        },
+        {
+          turnId: 'turn-3',
+          turnIndex: 3,
+          title: 'Turn #3: 门禁提交',
+          intent: '完成提交',
+          status: 'gate',
+          totalDuration: '100ms',
+          toolCounts: {},
+          subEvents: [],
+        },
+      ]
+
+      // 1. 测试展开单个节点 (turn-1 展开)：后续节点向右顺延平移 140px，消灭重叠
+      const expandedTurn1 = new Set(['turn-1'])
+      const result1 = turnsToFlowNodesAndEdges(turns, undefined, expandedTurn1)
+
+      assert.equal(result1.nodes[0].data.isExpanded, true)
+      assert.equal(result1.nodes[1].data.isExpanded, false)
+      assert.equal(result1.nodes[2].data.isExpanded, false)
+
+      // turn-1 位于 50，宽度 460，GAP 40 => turn-2 位于 50 + 460 + 40 = 550
+      assert.equal(result1.nodes[0].position.x, 50)
+      assert.equal(result1.nodes[1].position.x, 550)
+      // turn-2 宽度 320，GAP 40 => turn-3 位于 550 + 320 + 40 = 910
+      assert.equal(result1.nodes[2].position.x, 910)
+
+      // 2. 测试展开多个节点 (turn-1 与 turn-2 同时展开)
+      const expandedMultiple = new Set(['turn-1', 'turn-2'])
+      const result2 = turnsToFlowNodesAndEdges(turns, expandedMultiple)
+
+      assert.equal(result2.nodes[0].data.isExpanded, true)
+      assert.equal(result2.nodes[1].data.isExpanded, true)
+      assert.equal(result2.nodes[2].data.isExpanded, false)
+
+      // turn-1: 50, turn-2: 550, turn-3: 550 + 460 + 40 = 1050
+      assert.equal(result2.nodes[0].position.x, 50)
+      assert.equal(result2.nodes[1].position.x, 550)
+      assert.equal(result2.nodes[2].position.x, 1050)
+
+      // 3. 测试通过 options 传入 onToggleExpand 与 onDrillDown 回调并透传至 node.data
+      let toggledId = ''
+      let drilledId = ''
+      const onToggleExpand = (id: string) => {
+        toggledId = id
+      }
+      const onDrillDown = (id: string) => {
+        drilledId = id
+      }
+      const result3 = turnsToFlowNodesAndEdges(turns, {
+        onToggleExpand,
+        onDrillDown,
+        expandedTurnIds: expandedTurn1,
+      })
+
+      assert.equal(typeof result3.nodes[0].data.onToggleExpand, 'function')
+      const callback = result3.nodes[0].data.onToggleExpand as (id: string) => void
+      callback('turn-test')
+      assert.equal(toggledId, 'turn-test')
+
+      assert.equal(typeof result3.nodes[0].data.onDrillDown, 'function')
+      const drillCallback = result3.nodes[0].data.onDrillDown as (id: string) => void
+      drillCallback('turn-drill-test')
+      assert.equal(drilledId, 'turn-drill-test')
+    })
+  })
 })
+
