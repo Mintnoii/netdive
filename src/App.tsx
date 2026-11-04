@@ -161,8 +161,6 @@ interface CanvasViewportControllerProps {
   activeSessionId: string
   viewMode: 'turns' | 'flat'
   activeDrilldownTurnId: string | null
-  windowStart: number
-  windowEnd: number
   isFoldingEnabled: boolean
   resetKey: number
 }
@@ -171,8 +169,6 @@ function CanvasViewportController({
   activeSessionId,
   viewMode,
   activeDrilldownTurnId,
-  windowStart,
-  windowEnd,
   isFoldingEnabled,
   resetKey,
 }: CanvasViewportControllerProps) {
@@ -180,7 +176,7 @@ function CanvasViewportController({
   const isInitialRef = useRef(true)
 
   useEffect(() => {
-    // 无论是初次挂载、切会话、切换视图、进入/退出下钻、翻页还是折叠切换，等 React Flow 完成 DOM 布局后平滑聚焦
+    // 无论是初次挂载、切会话、切换视图、进入/退出下钻还是折叠切换，等 React Flow 完成 DOM 布局后平滑聚焦
     const timer = setTimeout(() => {
       fitView({ padding: 0.2, minZoom: 0.65, duration: isInitialRef.current ? 0 : 300 })
       isInitialRef.current = false
@@ -190,8 +186,6 @@ function CanvasViewportController({
     activeSessionId,
     viewMode,
     activeDrilldownTurnId,
-    windowStart,
-    windowEnd,
     isFoldingEnabled,
     resetKey,
     fitView,
@@ -240,9 +234,6 @@ function MainFlowCanvas() {
 
   // 微观下钻选中的 Turn ID (为 null 时处于宏观总览态)
   const [activeDrilldownTurnId, setActiveDrilldownTurnId] = useState<string | null>(null)
-
-  // 窗口化分页常数：DOM 节点安全视口窗口（仅全量平铺视图且节点数 > 50 时启用）
-  const WINDOW_SIZE = 50
 
   // 缓存当前会话的原始事件流水 (rawEvents)，作为同构折叠与拓扑重算的单一真理源
   const [rawEvents, setRawEvents] = useState<TelemetryEvent[]>(defaultMockEvents)
@@ -317,9 +308,12 @@ function MainFlowCanvas() {
 
     if (viewMode === 'turns') {
       if (effectiveActiveDrilldownTurnId && activeTurn) {
-        // 微观下钻模式：让 currentTurnAllEvents 全量通过 eventsToFlowNodesAndEdges 排布渲染在多行蛇形网格中
+        // 微观下钻模式：支持在回合内部对连续同构工具调用进行智能折叠
         // 确保微观内部因果边 100% 连贯，绝不分页断链
-        const { nodes: microNodes, edges: microEdges } = eventsToFlowNodesAndEdges(currentTurnAllEvents)
+        const displayTurnEvents = aggregateConsecutiveToolEvents(currentTurnAllEvents, {
+          enabled: isFoldingEnabled,
+        })
+        const { nodes: microNodes, edges: microEdges } = eventsToFlowNodesAndEdges(displayTurnEvents)
         return { derivedNodes: microNodes, derivedEdges: microEdges }
       }
 
@@ -348,46 +342,23 @@ function MainFlowCanvas() {
 
   const totalNodesCount = derivedNodes.length
 
-  // 判断当前选中的会话是否处于活跃运行/待审批状态
-  const isCurrentSessionActive = activeSessionMeta?.status === 'running' || activeSessionMeta?.status === 'gate'
-
-  // 判断当前是否需要在全量流水模式下启用滑动窗口保护（微观下钻内彻底消灭窗口切片）
-  const isFlatPaginationActive = viewMode === 'flat' && derivedNodes.length > WINDOW_SIZE
-
-  const { windowNodes, windowEdges, windowStart, windowEnd } = useMemo(() => {
-    if (!isFlatPaginationActive) {
-      return {
-        windowNodes: derivedNodes,
-        windowEdges: derivedEdges,
-        windowStart: 1,
-        windowEnd: derivedNodes.length,
-      }
+  // 当前时间轴截断渲染的节点与边（根据 timelineStep 进行时光切片回放）
+  const { visibleNodes, visibleEdges } = useMemo(() => {
+    if (totalNodesCount === 0) {
+      return { visibleNodes: [], visibleEdges: [] }
     }
-
-    const totalCount = derivedNodes.length
-    const currentFocus = timelineStep > 0 ? timelineStep : totalCount
-    const halfWindow = Math.floor(WINDOW_SIZE / 2)
-    let start = Math.max(0, currentFocus - halfWindow)
-    let end = start + WINDOW_SIZE
-
-    if (end > totalCount) {
-      end = totalCount
-      start = Math.max(0, end - WINDOW_SIZE)
-    }
-
-    const sliced = derivedNodes.slice(start, end)
+    // 0 或 >= totalNodesCount 表示呈现全量最新态
+    const step = timelineStep > 0 ? Math.min(timelineStep, totalNodesCount) : totalNodesCount
+    const sliced = derivedNodes.slice(0, step)
     const slicedIds = new Set(sliced.map((n) => n.id))
     const slicedEdges = derivedEdges.filter(
       (e) => slicedIds.has(e.source) && slicedIds.has(e.target)
     )
+    return { visibleNodes: sliced, visibleEdges: slicedEdges }
+  }, [derivedNodes, derivedEdges, timelineStep, totalNodesCount])
 
-    return {
-      windowNodes: sliced,
-      windowEdges: slicedEdges,
-      windowStart: start + 1,
-      windowEnd: end,
-    }
-  }, [isFlatPaginationActive, derivedNodes, derivedEdges, timelineStep, WINDOW_SIZE])
+  // 判断当前选中的会话是否处于活跃运行/待审批状态
+  const isCurrentSessionActive = activeSessionMeta?.status === 'running' || activeSessionMeta?.status === 'gate'
 
   // 当会话切换、视图切换、下钻切换或节点更新时，重置时间轴当前步数至最新步
   useEffect(() => {
@@ -564,7 +535,7 @@ function MainFlowCanvas() {
                       const currentItem = displaySessionsList.find((s) => s.id === activeSessionId) || activeSessionMeta
                       const res = await copySessionDiagnosticToClipboard({
                         sessionMeta: currentItem,
-                        nodes,
+                        nodes: derivedNodes,
                       })
                       if (res.success) {
                         setIsDiagnosticCopied(true)
@@ -700,8 +671,8 @@ function MainFlowCanvas() {
                 ) : null}
 
                 <ReactFlow
-                  nodes={windowNodes}
-                  edges={windowEdges}
+                  nodes={visibleNodes}
+                  edges={visibleEdges}
                   nodeTypes={nodeTypes}
                   onNodesChange={onNodesChange}
                   onEdgesChange={onEdgesChange}
@@ -763,8 +734,6 @@ function MainFlowCanvas() {
                     activeSessionId={activeSessionId}
                     viewMode={viewMode}
                     activeDrilldownTurnId={activeDrilldownTurnId}
-                    windowStart={windowStart}
-                    windowEnd={windowEnd}
                     isFoldingEnabled={isFoldingEnabled}
                     resetKey={resetKey}
                   />
@@ -800,7 +769,12 @@ function MainFlowCanvas() {
                         {activeTurn.title}
                       </span>
                       <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#FAF8F5] text-[#5C5549] border border-[#E5E0D8]">
-                        {currentTurnAllEvents.length} 步因果拓扑
+                        {derivedNodes.length} 步因果拓扑
+                        {isFoldingEnabled && derivedNodes.length !== currentTurnAllEvents.length && (
+                          <span className="text-[#8F887D] ml-1">
+                            (已折叠 / 原始 {currentTurnAllEvents.length} 步)
+                          </span>
+                        )}
                       </span>
                     </div>
 
@@ -850,37 +824,6 @@ function MainFlowCanvas() {
                         </div>
                       </>
                     )}
-                  </div>
-                )}
-
-                {/* 长链路滑动窗口状态浮标与快速翻页胶囊 (仅全量流水且总节点 > 50 时展示) */}
-                {isFlatPaginationActive && (
-                  <div className="absolute top-3 right-4 z-10 flex items-center space-x-2 bg-white/95 backdrop-blur-xs border border-[#E5E0D8] rounded-lg p-1.5 shadow-xs text-xs font-mono text-[#5C5549] select-none">
-                    <button
-                      onClick={() => {
-                        const target = Math.max(1, (timelineStep || totalNodesCount) - WINDOW_SIZE)
-                        setTimelineStep(target)
-                      }}
-                      disabled={windowStart <= 1}
-                      className="px-2 py-0.5 rounded bg-[#F4F0EA] hover:bg-[#EAE4D9] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
-                      title="向前翻滚 50 步窗口"
-                    >
-                      ◀ 上 50 步
-                    </button>
-                    <span className="text-[11px] px-1">
-                      视口窗口: <strong className="text-[#1E2024]">{windowStart}</strong> - <strong className="text-[#1E2024]">{windowEnd}</strong> (共 {totalNodesCount} 步)
-                    </span>
-                    <button
-                      onClick={() => {
-                        const target = Math.min(totalNodesCount, (timelineStep || totalNodesCount) + WINDOW_SIZE)
-                        setTimelineStep(target)
-                      }}
-                      disabled={windowEnd >= totalNodesCount}
-                      className="px-2 py-0.5 rounded bg-[#F4F0EA] hover:bg-[#EAE4D9] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
-                      title="向后翻滚 50 步窗口"
-                    >
-                      下 50 步 ▶
-                    </button>
                   </div>
                 )}
               </div>
@@ -954,7 +897,7 @@ function MainFlowCanvas() {
                 isPlaying={isTimelinePlaying}
                 playbackSpeed={playbackSpeed}
                 isFoldingEnabled={isFoldingEnabled}
-                isFoldingVisible={viewMode === 'flat'}
+                isFoldingVisible={viewMode === 'flat' || !!effectiveActiveDrilldownTurnId}
                 unitLabel={viewMode === 'turns' && !activeDrilldownTurnId ? '回合' : '步'}
                 onResetCanvas={() => {
                   setContextMenu(null)
