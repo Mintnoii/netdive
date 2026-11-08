@@ -35,28 +35,31 @@ export interface ContextInspectorDrawerProps {
 }
 
 const HEALTH_BADGES = [
-  { max: 65, label: '健康', cls: 'bg-emerald-100 border-emerald-300 text-emerald-800' },
-  { max: 85, label: '告警', cls: 'bg-amber-100 border-amber-300 text-amber-800' },
-  { max: Infinity, label: '紧张', cls: 'bg-rose-100 border-rose-300 text-rose-800' },
+  { max: 65, label: '健康', cls: 'bg-emerald-50 text-emerald-700', dotCls: 'bg-emerald-500' },
+  { max: 85, label: '告警', cls: 'bg-amber-50 text-amber-700', dotCls: 'bg-amber-500' },
+  { max: Infinity, label: '紧张', cls: 'bg-rose-50 text-rose-700', dotCls: 'bg-rose-500' },
 ] as const
 
 const PROVENANCE_BADGES: Record<
   'counted' | 'estimated' | 'live',
-  { label: string; cls: string; title: string }
+  { label: string; cls: string; dotCls: string; title: string }
 > = {
   counted: {
     label: '实测 Counted',
-    cls: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+    cls: 'bg-emerald-50 text-emerald-700',
+    dotCls: 'bg-emerald-500',
     title: '来自真实 usage（JSONL 的 message.usage）',
   },
   estimated: {
     label: '估算 Estimated',
-    cls: 'bg-amber-50 border-amber-300 text-amber-800',
+    cls: 'bg-amber-50 text-amber-700',
+    dotCls: 'bg-amber-500',
     title: '该会话 JSONL 未记录 usage，Token 按字符量启发式粗估',
   },
   live: {
     label: '实时 Live',
-    cls: 'bg-indigo-50 border-indigo-300 text-indigo-800',
+    cls: 'bg-indigo-50 text-indigo-700',
+    dotCls: 'bg-indigo-500',
     title: '由实时流增量与手势启发式推算，非真实 usage',
   },
 }
@@ -231,7 +234,7 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
       <section
         role="region"
         aria-label="上下文水位明细抽屉"
-        className="fixed inset-x-0 bottom-0 z-50 flex flex-col h-[min(66vh,640px)] rounded-t-2xl border-t-2 border-[#DCD5C9] bg-[#FBF9F5] text-[#1E2024] font-sans shadow-[0_-8px_24px_rgba(30,32,36,0.10)] overflow-hidden drawer-sheet-up"
+        className="fixed inset-x-0 bottom-0 z-50 flex flex-col h-[min(72vh,700px)] rounded-t-2xl border-t-2 border-[#DCD5C9] bg-[#FBF9F5] text-[#1E2024] font-sans [font-variant-numeric:tabular-nums] shadow-[0_-8px_24px_rgba(30,32,36,0.10)] overflow-hidden drawer-sheet-up"
       >
         {/* 顶部把手：点击即收起 */}
         <button
@@ -243,164 +246,197 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
           <span className="w-10 h-1 rounded-full bg-[#D6D0C5] group-hover:bg-[#B5AFA4] transition-colors" />
         </button>
 
-        {/* 顶部大盘 (Top Overview) */}
-        <header className="shrink-0 px-5 pb-2">
-          <div className="flex items-start justify-between">
-            <div className="grid grid-cols-2 gap-4 flex-1">
-              {/* 左侧 */}
-              <div className="flex flex-col">
-                <div className="flex items-center space-x-2">
-                  <div className="p-0.5 rounded bg-violet-100 border border-violet-300 shrink-0">
-                    <Layers className="w-3.5 h-3.5 text-violet-700" />
+        {/* 内容区：三段卡片节奏 */}
+        <div className="flex-1 min-h-0 flex flex-col gap-3.5 px-5 pb-3">
+          {/* 第 1 段：顶部大盘 (Top Overview) */}
+          <div className="shrink-0 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="p-0.5 rounded bg-violet-50 text-violet-700 shrink-0">
+                  <Layers className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-[13px] font-semibold text-[#1E2024]">上下文窗口</span>
+                <span className={`inline-flex items-center gap-1.5 h-5 rounded-full px-2 text-[11px] font-medium ${health.cls}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${health.dotCls}`} />
+                  <span>{health.label}</span>
+                </span>
+                {provenanceBadge && (
+                  <span
+                    className={`inline-flex items-center gap-1.5 h-5 rounded-full px-2 text-[11px] font-medium ${provenanceBadge.cls}`}
+                    title={provenanceBadge.title}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${provenanceBadge.dotCls}`} />
+                    <span>{provenanceBadge.label}</span>
+                  </span>
+                )}
+                {(sessionTitle || sessionId) && (
+                  <span className="text-[11px] font-mono text-[#A8A29E] truncate max-w-[160px]">
+                    {sessionTitle || sessionId}
+                  </span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-1.5 rounded-md text-[#8F887D] hover:text-[#1E2024] hover:bg-[#EAE5DC] transition-colors cursor-pointer shrink-0"
+                title="收起抽屉 (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex items-end justify-between gap-6">
+              {/* 大盘指标块 (.facts 风格：三格分别「已用 / 窗口上限 / 剩余」) */}
+              <div className="flex items-end gap-8 pt-2 border-t border-[#EFEAE2]">
+                {/* 格 1: 已用 */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[#8F887D]">
+                    已用 ({usagePercent}%)
+                  </span>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xl font-semibold text-[#1E2024]">
+                      {formatTokens(totalUsed)}
+                    </span>
+                    {(watermark.provenance === 'estimated' || watermark.provenance === 'live') && (
+                      <span className="text-[10px] text-[#8F887D]">推算值</span>
+                    )}
                   </div>
-                  <span className="text-[12px] font-semibold text-[#1E2024]">上下文窗口</span>
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono border font-medium ${health.cls}`}>
-                    {health.label}
-                  </span>
-                  {provenanceBadge && (
-                    <span
-                      className={`px-1.5 py-0.5 rounded border text-[10px] font-mono ${provenanceBadge.cls}`}
-                      title={provenanceBadge.title}
-                    >
-                      {provenanceBadge.label}
-                    </span>
-                  )}
-                  {(sessionTitle || sessionId) && (
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#EAE5DC] text-[#5E6573] border border-[#DCD5C9] truncate max-w-[140px]">
-                      {sessionTitle || sessionId}
-                    </span>
-                  )}
                 </div>
-                <div className="flex items-baseline space-x-1.5 mt-0.5">
-                  <span className="text-2xl font-bold text-[#1E2024] font-mono tracking-tight">
-                    {formatTokens(totalUsed)}
-                  </span>
-                  <span className="text-xs text-[#8F887D] font-mono">
-                    / {formatTokens(maxCapacity)} token
-                  </span>
-                  {watermark.windowSource === 'default' && (
-                    <span
-                      className="text-[10px] text-[#8F887D]"
-                      title="该模型不在本地窗口规则表内，按 200k 兜底计算占用百分比"
-                    >
-                      窗口未知·按 200k 兜底
+
+                {/* 格 2: 窗口上限 */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[#8F887D]">窗口上限</span>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-[13px] font-semibold text-[#1E2024]">
+                      {formatTokens(maxCapacity)}
                     </span>
-                  )}
+                    {watermark.windowSource === 'default' && (
+                      <span className="text-[10px] text-[#8F887D]" title="按 200k 兜底">
+                        (兜底)
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-[11px] font-mono text-[#5E6573] mt-0.5">
-                  已用 {usagePercent}% · 剩余 {formatTokens(remainingTokens)}
-                  {(watermark.provenance === 'estimated' || watermark.provenance === 'live') && (
-                    <span className="text-[#8F887D]"> · 推算值</span>
-                  )}
+
+                {/* 格 3: 剩余 */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[#8F887D]">剩余</span>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-[13px] font-semibold text-[#1E2024]">
+                      {formatTokens(remainingTokens)}
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              {/* 右侧 */}
-              <div className="flex flex-col justify-between pl-4 border-l border-[#E5E0D8]">
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-[#5E6573] font-medium">提示词缓存</span>
-                  <div className="flex items-baseline space-x-1 font-mono">
-                    <span className="text-2xl font-bold text-[#1E2024] tracking-tight">{cacheHitRate}%</span>
-                    <span className="text-xs text-[#8F887D]">命中</span>
-                  </div>
+              {/* Cache 块 */}
+              <div className="pt-2.5 border-t border-[#EFEAE2] flex flex-col gap-1 items-end w-full max-w-[280px]">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-[11px] text-[#8F887D]">提示词缓存</span>
+                  <span className="text-[13px] font-semibold text-[#1E2024]">{cacheHitRate}% 命中</span>
                 </div>
-                <div className="w-full h-1.5 rounded bg-[#ECE8E1] overflow-hidden my-1">
+                <div className="h-1 w-full max-w-[280px] rounded-full bg-[#ECE8E1] overflow-hidden">
                   <div
                     style={{ width: `${Math.min(100, Math.max(0, cacheHitRate))}%` }}
-                    className="h-full bg-amber-500 rounded"
+                    className="h-full bg-amber-500 rounded-full"
                   />
                 </div>
-                <div className="text-[10px] font-mono text-[#8F887D]">
+                <div className="text-[10px] text-[#A8A29E]">
                   {formatTokens(cacheReadTokens)} 来自缓存 · {formatTokens(totalUsed)} 新增
                 </div>
               </div>
             </div>
-
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 ml-3 rounded-md text-[#8F887D] hover:text-[#1E2024] hover:bg-[#EAE5DC] transition-colors cursor-pointer shrink-0"
-              title="收起抽屉 (Esc)"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </header>
-
-        {/* 上下文分布图 (ContextPromptMap: 单一 Treemap 视图) */}
-        <div className="h-[168px] shrink-0 px-5 pb-2">
-          <ContextPromptMap
-            prompt={prompt}
-            focus={focus}
-            onFocus={setFocus}
-            onOpenPart={(kind) => setOverlay({ kind })}
-          />
-        </div>
-
-        {/* 内容清单收敛为 7 个 part 概要行 */}
-        <div className="flex-1 min-h-0 flex flex-col px-5 pb-2">
-          <div className="shrink-0 flex items-center justify-between py-1.5 select-none">
-            <span className="text-[11px] font-semibold text-[#1E2024]">内容构成</span>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1">
-            {CONTEXT_PART_KINDS.map((kind) => {
-              const part = prompt.parts.find((p) => p.kind === kind)
-              const tokens = part?.tokens ?? 0
-              const isEmpty = tokens === 0
-              const pct = prompt.window > 0 ? Math.round((tokens / prompt.window) * 100) : 0
-              const fillWidthPct = Math.min(100, Math.max(0, (tokens / maxPartTokens) * 100))
-              const isFocused = focus?.kind === kind
+          {/* 第 2 段：上下文分布图 (ContextPromptMap: 单一 Treemap 视图) */}
+          <div className="shrink-0 border-t border-[#EFEAE2] pt-3.5">
+            <div className="h-[124px] w-full">
+              <ContextPromptMap
+                prompt={prompt}
+                focus={focus}
+                onFocus={setFocus}
+                onOpenPart={(kind) => setOverlay({ kind })}
+              />
+            </div>
+          </div>
 
-              return (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => setOverlay({ kind })}
-                  onMouseEnter={() => setFocus({ kind })}
-                  onMouseLeave={() => setFocus(null)}
-                  className={`w-full text-left p-2 rounded-lg border transition-all flex items-center justify-between space-x-3 select-none ${
-                    isFocused
-                      ? 'bg-white border-[#B5AFA4] shadow-xs cursor-pointer'
-                      : 'bg-[#FAF8F5] border-[#EFEAE2] hover:bg-white hover:border-[#B5AFA4] cursor-pointer'
-                  } ${isEmpty ? 'opacity-60 text-[#8F887D]' : 'text-[#1E2024]'}`}
-                >
-                  {/* 左侧：色点 + 中文名 */}
-                  <div className="flex items-center space-x-2 min-w-0 flex-1">
+          {/* 第 3 段：内容清单收敛为 7 个 part 概要行 */}
+          <div className="flex-1 min-h-0 flex flex-col border-t border-[#EFEAE2] pt-3.5">
+            <div className="shrink-0 flex items-center justify-between pb-1.5 mb-1.5 select-none">
+              <span className="text-[11px] font-semibold text-[#5E6573]">内容构成</span>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-1">
+              {CONTEXT_PART_KINDS.map((kind) => {
+                const part = prompt.parts.find((p) => p.kind === kind)
+                const tokens = part?.tokens ?? 0
+                const isEmpty = tokens === 0
+                const pct = prompt.window > 0 ? Math.round((tokens / prompt.window) * 100) : 0
+                const fillWidthPct = Math.min(100, Math.max(0, (tokens / maxPartTokens) * 100))
+                const isFocused = focus?.kind === kind
+                const itemCount = part?.items?.reduce((sum, it) => sum + (it.n ?? 1), 0) ?? 0
+                const primaryTag = part?.items?.[0]?.tag
+
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => setOverlay({ kind })}
+                    onMouseEnter={() => setFocus({ kind })}
+                    onMouseLeave={() => setFocus(null)}
+                    className={`w-full flex items-center gap-2 min-h-[26px] px-1.5 -mx-1.5 rounded-md text-[12px] hover:bg-[#F4F0EA] transition-colors cursor-pointer select-none text-left ${
+                      isFocused ? 'bg-[#F4F0EA]' : ''
+                    } ${isEmpty ? 'opacity-50' : ''}`}
+                  >
+                    {/* dot */}
                     <span
                       className={`w-1.5 h-1.5 rounded-full shrink-0 ${PART_DOT_CLASSES[kind]}`}
                     />
-                    <span className="text-[11.5px] font-medium truncate min-w-0">
+                    {/* 名称 */}
+                    <span className="text-[12px] font-medium text-[#1E2024] truncate">
                       {PART_LABELS[kind]}
                     </span>
-                  </div>
-
-                  {/* 右侧：mini bar (72x4px) + tokens + 占比 */}
-                  <div className="flex items-center space-x-2 shrink-0">
-                    <div className="w-[72px] h-[4px] rounded bg-[#ECE8E1] overflow-hidden shrink-0">
+                    {/* ×n */}
+                    {itemCount > 1 && (
+                      <span className="text-[11px] text-[#8F887D] shrink-0">
+                        ×{itemCount}
+                      </span>
+                    )}
+                    {/* tag 芯片 */}
+                    {primaryTag && (
+                      <span className="text-[10px] px-1.5 py-[1px] rounded bg-[#F4F0EA] text-[#8F887D] shrink-0">
+                        {primaryTag}
+                      </span>
+                    )}
+                    <div className="flex-1" />
+                    {/* mini bar */}
+                    <div className="w-[72px] h-1 rounded-sm bg-[#ECE8E1] shrink-0 overflow-hidden">
                       <div
                         style={{ width: `${fillWidthPct}%` }}
                         className={`h-full ${PART_FILL_CLASSES[kind]}`}
                       />
                     </div>
-                    <span className="text-[10px] font-mono w-12 text-right text-[#5E6573] font-semibold">
+                    {/* token 值 */}
+                    <span className="w-12 text-right text-[11.5px] text-[#5E6573] shrink-0">
                       {formatTokens(tokens)}
                     </span>
-                    <span className="text-[10px] font-mono w-10 text-right text-[#8F887D]">
+                    {/* 占比 */}
+                    <span className="w-9 text-right text-[10px] text-[#A8A29E] shrink-0">
                       {pct}%
                     </span>
-                  </div>
-                </button>
-              )
-            })}
+                  </button>
+                )
+              })}
+            </div>
           </div>
         </div>
 
         {/* 压缩机会摘要条 (Compaction Opportunities Summary Bar) */}
-        <div className="shrink-0 px-5 py-2 border-t border-[#E5E0D8] bg-[#FAF8F5] flex items-center justify-between text-[11px] font-mono select-none">
+        <div className="shrink-0 px-5 py-2 border-t border-[#E5E0D8] bg-[#FAF8F5] flex items-center justify-between text-[11px] select-none">
           {/* 左：推演账 */}
           <div className="flex items-center space-x-2 text-[#1E2024]">
-            <span className="font-medium">
+            <span className="font-medium text-[11px]">
               {analysis.hitCount === 0
                 ? '本次会话无折叠机会'
                 : `可折叠 ${analysis.hitCount} 条 · 预计释放 ${formatTokens(analysis.totalReclaimedChars)} 字符`}
@@ -410,9 +446,9 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
           {/* 中/右：真实账与预演按钮 */}
           <div className="flex items-center space-x-4">
             {walStats.isOffline ? (
-              <span className="text-[#8F887D]">bridge 未连接，仅显示推演账</span>
+              <span className="text-[11px] text-[#8F887D]">bridge 未连接，仅显示推演账</span>
             ) : walStats.stats ? (
-              <span className="text-[#5E6573]">
+              <span className="text-[11px] text-[#5E6573]">
                 bridge 已折叠 {walStats.stats.totalEntries} 条 · 释放 {formatTokens(walStats.stats.totalReclaimedChars)} 字符
               </span>
             ) : null}
@@ -430,20 +466,20 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
         {/* 底部 (Footer) */}
         <footer className="shrink-0 px-5 py-2.5 border-t border-[#E5E0D8] bg-[#F4F0EA] flex flex-col gap-2 select-none">
           {/* 图例行 */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[11px]">
             {CONTEXT_PART_KINDS.map((kind) => {
               const part = prompt.parts.find((p) => p.kind === kind)
               const tokens = part?.tokens ?? 0
               return (
-                <div key={kind} className="flex items-center space-x-1.5 text-[10px] font-mono shrink-0">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${PART_DOT_CLASSES[kind]}`} />
+                <div key={kind} className="flex items-center gap-1.5 shrink-0">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PART_DOT_CLASSES[kind]}`} />
                   <span className="text-[#5E6573]">{PART_LABELS[kind]}</span>
                   <span className="font-semibold text-[#1E2024]">{formatTokens(tokens)}</span>
                 </div>
               )
             })}
-            <div className="flex items-center space-x-1.5 text-[10px] font-mono shrink-0">
-              <span className="w-2 h-2 rounded-full shrink-0 bg-[#8F887D]" />
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#8F887D]" />
               <span className="text-[#5E6573]">剩余空间</span>
               <span className="font-semibold text-[#1E2024]">{formatTokens(remainingTokens)}</span>
             </div>
@@ -451,7 +487,7 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
 
           {/* 操作与提示行 */}
           <div className="flex items-center justify-between gap-3 pt-1 border-t border-[#EAE5DC]">
-            <div className="flex items-center space-x-1.5 text-[11px] font-mono text-[#5E6573] min-w-0 truncate">
+            <div className="flex items-center space-x-1.5 text-[11px] text-[#5E6573] min-w-0 truncate">
               <Info className="w-3.5 h-3.5 text-[#8F887D] shrink-0" />
               <span className="truncate">
                 微压缩由 bridge 摄入时自动完成，本面板只做推演与对账
