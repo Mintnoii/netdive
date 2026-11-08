@@ -37,7 +37,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
           )}
         </button>
 
-        {/* 上下文瘦身 Tab */}
+        {/* 压缩沙盒 Tab */}
         <button
           onClick={() => onChangeTab('lab')}
           className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
@@ -45,10 +45,10 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               ? 'bg-[#1E2024] text-[#FBF9F5] shadow-xs'
               : 'text-[#8E887E] hover:text-[#1E2024] hover:bg-[#F7F5F0]'
           }`}
-          title="长上下文剪枝与压缩瘦身效果演示"
+          title="长上下文剪枝与微压缩沙盒实验台（非真实会话数据，仅本地试算）"
         >
-          <span>上下文瘦身</span>
-          <span className="text-[10px] px-1 py-0.2 rounded bg-[#E5E0D8] text-[#6E685E] scale-90">Lab</span>
+          <span>压缩沙盒</span>
+          <span className="text-[10px] px-1 py-0.2 rounded bg-[#E5E0D8] text-[#6E685E] scale-90">Sandbox</span>
         </button>
       </div>
     </div>

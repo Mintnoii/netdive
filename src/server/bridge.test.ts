@@ -557,51 +557,37 @@ describe('Context Watermark & Token Utilities', () => {
 })
 
 describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
-  it('DEFAULT_PRUNABLE_ITEMS satisfies prunable items and token breakdown contract (~46k tokens)', async () => {
-    const { DEFAULT_PRUNABLE_ITEMS } = await import(
-      '../types/telemetry'
-    )
+  it('parseTranscript marks watermark provenance counted when usage exists and estimated otherwise', async () => {
+    const { parseTranscript } = await import('../services/transcriptParser')
+    const { REALISTIC_PI_TRANSCRIPT_SAMPLE } = await import('../services/sampleTranscript')
 
-    assert.equal(DEFAULT_PRUNABLE_ITEMS.length, 3)
+    // 1. 带真实 usage 的 JSONL -> counted
+    const withUsageJsonl = [
+      JSON.stringify({ type: 'session', id: 'sess-counted-1', cwd: '/repo' }),
+      JSON.stringify({
+        type: 'message',
+        id: 'msg-1',
+        message: { role: 'user', content: [{ type: 'text', text: 'run tests' }] },
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'msg-2',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'done' }],
+          usage: { input: 42000, output: 800, cacheRead: 30000, reasoning: 400 },
+        },
+      }),
+    ].join('\n')
+    const countedParsed = parseTranscript(withUsageJsonl)
+    assert.ok(countedParsed.watermark)
+    assert.equal(countedParsed.watermark.provenance, 'counted')
 
-    // Item 1: Bash pnpm test:pipeline -> 156 passed (~28k tokens)
-    const item1 = DEFAULT_PRUNABLE_ITEMS[0]
-    assert.equal(item1.gesture, 'bash')
-    assert.match(item1.title, /Bash: pnpm test:pipeline -> 156 passed/)
-    assert.match(item1.rawDetail, /150 lines raw test stdout\/stderr, ~28k tokens/)
-    assert.equal(item1.tokens, 28000)
-    assert.equal(item1.statusBadge, '已完成历史使命 (Resolved)')
-    assert.match(item1.foldedSummary, /单元测试回归通过 \(156 passed, 0 failed\)/)
-    assert.ok(!item1.foldedSummary.includes('[已修剪:'), 'foldedSummary must not contain [已修剪:] when not pruned')
-    assert.equal(item1.linesCount, 150)
-    assert.ok(item1.rawPayloadPreview?.includes('$ pnpm test:pipeline'))
-
-    // Item 2: Edit packages/core/pipeline.ts (~14k tokens)
-    const item2 = DEFAULT_PRUNABLE_ITEMS[1]
-    assert.equal(item2.gesture, 'edit')
-    assert.match(item2.title, /Edit: packages\/core\/pipeline\.ts/)
-    assert.match(item2.rawDetail, /Full AST diff & replaced try\/catch \(~14k tokens\)/)
-    assert.equal(item2.tokens, 14000)
-    assert.equal(item2.statusBadge, '已完成历史使命 (Resolved)')
-    assert.ok(!item2.foldedSummary.includes('[已修剪:'))
-    assert.equal(item2.linesCount, 42)
-    assert.ok(item2.rawPayloadPreview?.includes('--- a/packages/core/src/pipeline.ts'))
-
-    // Item 3: Read src/config.ts (~4k tokens)
-    const item3 = DEFAULT_PRUNABLE_ITEMS[2]
-    assert.equal(item3.gesture, 'read')
-    assert.match(item3.title, /Read: src\/config\.ts/)
-    assert.match(item3.rawDetail, /Raw file contents \(~4k tokens\)/)
-    assert.equal(item3.tokens, 4000)
-    assert.equal(item3.statusBadge, '已完成历史使命 (Resolved)')
-    assert.match(item3.foldedSummary, /成功读取 package\.json，确认依赖缺失/)
-    assert.ok(!item3.foldedSummary.includes('[已修剪:'))
-    assert.equal(item3.linesCount, 28)
-    assert.ok(item3.rawPayloadPreview?.includes('@netdive/core'))
-
-    // Total tokens sum to 46,000 (matching DEFAULT_CONTEXT_WATERMARK.prunableTools)
-    const totalTokens = DEFAULT_PRUNABLE_ITEMS.reduce((acc, it) => acc + it.tokens, 0)
-    assert.equal(totalTokens, 46000)
+    // 2. 内置样例本身不含 usage 字段 -> estimated
+    assert.ok(!REALISTIC_PI_TRANSCRIPT_SAMPLE.includes('"usage"'))
+    const sampleParsed = parseTranscript(REALISTIC_PI_TRANSCRIPT_SAMPLE)
+    assert.ok(sampleParsed.watermark)
+    assert.equal(sampleParsed.watermark.provenance, 'estimated')
   })
 
   it('useTelemetryStream exports pauseStream, resumeStream, isPaused, and togglePauseResume', async () => {
@@ -657,6 +643,8 @@ describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
         gesture: 'bash',
         status: 'completed',
         summary: 'pnpm test:pipeline -> 156 passed',
+        prunableTokens: 28000,
+        linesCount: 150,
         observation: {
           exitCode: 0,
           output: ['Tests: 156 passed, 156 total', 'Time: 1.78s'],
@@ -674,6 +662,8 @@ describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
         gesture: 'edit',
         status: 'completed',
         summary: '移除原生 try-catch，迁移至 radash.tryit',
+        prunableTokens: 14000,
+        linesCount: 42,
       },
     }
 
@@ -687,6 +677,8 @@ describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
         gesture: 'read',
         status: 'completed',
         summary: '读取 package.json 依赖契约',
+        prunableTokens: 4000,
+        linesCount: 28,
       },
     }
 
@@ -810,10 +802,7 @@ describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
     assert.equal(diffItem.linesCount, 5)
   })
 
-  it('PrunableInspectorDrawer and AgentNode components export successfully with expected types', async () => {
-    const { PrunableInspectorDrawer } = await import('../components/PrunableInspectorDrawer')
-    assert.equal(typeof PrunableInspectorDrawer, 'function')
-
+  it('AgentNode component exports successfully with expected types', async () => {
     const { AgentNode } = await import('../components/AgentNode')
     assert.equal(typeof AgentNode, 'function')
   })
@@ -950,6 +939,31 @@ describe('Telemetry Event Normalization & Contract Robustness', () => {
     }
     const nullItems = extractPrunableItems([nullObsNode])
     assert.equal(nullItems.length, 1)
+  })
+
+  it('extractPrunableItems dynamically derives tokens from stdout characters when prunableTokens is omitted', async () => {
+    const { extractPrunableItems } = await import('../hooks/useTelemetryStream')
+
+    const dynamicBashNode: any = {
+      id: 'node-dynamic-bash',
+      type: 'agentNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: 'Bash 动态测试',
+        gesture: 'bash',
+        status: 'completed',
+        observation: {
+          exitCode: 0,
+          output: Array.from({ length: 40 }, (_, i) => `Output line ${i} with 30 characters`),
+        },
+      },
+    }
+
+    const [item] = extractPrunableItems([dynamicBashNode])
+    assert.equal(item.id, 'node-dynamic-bash')
+    assert.equal(item.linesCount, 40)
+    // 40 行 * ~35 字符 = ~1400 字符 -> ~350 Tokens
+    assert(item.tokens > 300 && item.tokens < 500, `Expected ~350 tokens, got ${item.tokens}`)
   })
 })
 

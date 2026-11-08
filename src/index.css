@@ -22,6 +22,37 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 底部悬浮抽屉上滑动画 (Bottom Sheet Slide Up) */
+@keyframes drawer-sheet-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.drawer-sheet-up {
+  animation: drawer-sheet-up 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform;
+}
+
+/* 抽屉轻遮罩淡入动画 (Backdrop Fade In) */
+@keyframes drawer-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.drawer-fade-in {
+  animation: drawer-fade-in 200ms ease-out both;
+}
+
 /* Custom Paper Dotted Background */
 .paper-pattern {
   background-image: radial-gradient(#D6D0C5 1px, transparent 1px);

@@ -64,7 +64,8 @@ export interface CausalChainResolution {
 }
 
 /**
- * 依据动作手势与执行观测结果计算单步 Token 水位动态增量
+ * 依据动作手势与执行观测结果计算单步 Token 水位动态增量。
+ * 增量为启发式估算，供实时流位势演示，不代表真实 usage。
  */
 export function getDynamicWatermarkDelta(item?: {
   gesture?: TelemetryGesture
@@ -519,6 +520,7 @@ export function processEventForSession(
           (session.watermark?.activeTurns ?? 0) + (delta.activeTurns ?? 0),
         prunableTools:
           (session.watermark?.prunableTools ?? 0) + (delta.prunableTools ?? 0),
+        provenance: 'live',
       }
 
       return {
@@ -634,6 +636,7 @@ export function processEventForSession(
           (session.watermark?.activeTurns ?? 0) + (delta.activeTurns ?? 0),
         prunableTools:
           (session.watermark?.prunableTools ?? 0) + (delta.prunableTools ?? 0),
+        provenance: 'live',
       }
 
       return {
@@ -720,7 +723,7 @@ export function processEventForSession(
     }
 
     case 'context_pruned': {
-      const reclaimed = event.reclaimedTokens ?? 42000
+      const reclaimed = event.reclaimedTokens ?? 0
       const nextNodes = session.nodes.map((node) => {
         const currentData = node.data as unknown as AgentNodeData
         const isPrunable = event.prunedNodeIds
@@ -850,23 +853,6 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
             ? '代码编辑'
             : '读取文件')
 
-      let tokens = 0
-      if (gesture === 'bash') {
-        const hasTestOutput = Boolean(
-          outputLines.length > 0 ||
-            (data.summary &&
-              /test|passed|failed|回归|单测|156/i.test(data.summary)) ||
-            (data.title && /test|测试/i.test(data.title))
-        )
-        tokens = hasTestOutput ? 28000 : 16000
-      } else if (gesture === 'edit') {
-        tokens = 14000
-      } else if (gesture === 'read') {
-        tokens = 4000
-      } else {
-        tokens = 8000
-      }
-
       const isNodePruned = Boolean(data.pruned)
       const statusBadge = isNodePruned
         ? '已折叠压缩 (Pruned)'
@@ -892,7 +878,6 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
       let linesCount = 0
 
       if (gesture === 'bash') {
-        linesCount = 150
         const isFailed =
           data.observation?.exitCode !== 0 ||
           data.status === 'failed' ||
@@ -901,7 +886,7 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
         if (isFailed) {
           const errorLines =
             outputLines.length > 0
-              ? outputLines.map((line) => `✖ ${line}`)
+              ? outputLines.map((line) => (line.startsWith('✖') ? line : `✖ ${line}`))
               : [
                   '✖ AssertionError: Expected 200 OK, got 500',
                   '  at test/pipeline.test.ts:42',
@@ -916,7 +901,7 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
           rawPayloadPreview = [
             '$ pnpm test:pipeline',
             '> vitest run pipeline',
-            ...outputLines.map((line) => `✓ ${line}`),
+            ...outputLines.map((line) => (line.startsWith('✓') ? line : `✓ ${line}`)),
             '  ... (150 lines raw stdout/stderr hidden)',
           ].join('\n')
         } else {
@@ -930,11 +915,18 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
             '  ... (150 lines raw stdout/stderr hidden)',
           ].join('\n')
         }
+
+        linesCount =
+          typeof data.linesCount === 'number' && data.linesCount > 0
+            ? data.linesCount
+            : (data.observation?.linesCount as number) || (outputLines.length > 2 ? outputLines.length : 150)
       } else if (gesture === 'edit') {
-        linesCount = 42
         if (data.payload?.diff && typeof data.payload.diff === 'string') {
           rawPayloadPreview = data.payload.diff
           linesCount = data.payload.diff.split('\n').length
+        } else if (outputLines.length > 0) {
+          rawPayloadPreview = outputLines.join('\n')
+          linesCount = outputLines.length
         } else {
           rawPayloadPreview = [
             '--- a/packages/core/src/pipeline.ts',
@@ -944,12 +936,15 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
             '-   const res = await run()',
             '+ const [err, res] = await tryit(run)()',
           ].join('\n')
+          linesCount = typeof data.linesCount === 'number' && data.linesCount > 0 ? data.linesCount : 42
         }
       } else if (gesture === 'read') {
-        linesCount = 28
         if (data.payload?.content && typeof data.payload.content === 'string') {
           rawPayloadPreview = data.payload.content
           linesCount = data.payload.content.split('\n').length
+        } else if (outputLines.length > 0) {
+          rawPayloadPreview = outputLines.join('\n')
+          linesCount = outputLines.length
         } else {
           rawPayloadPreview = [
             '{',
@@ -961,7 +956,45 @@ export function extractPrunableItems(nodes: Node[]): PrunableItem[] {
             '  }',
             '}',
           ].join('\n')
+          linesCount = typeof data.linesCount === 'number' && data.linesCount > 0 ? data.linesCount : 28
         }
+      }
+
+      if (typeof data.linesCount === 'number' && data.linesCount > 0) {
+        linesCount = data.linesCount
+      }
+
+      // 真实载荷尺寸折算：彻底废除 28000/14000/4000 等硬编码伪数字
+      let tokens = 0
+      if (typeof data.prunableTokens === 'number' && data.prunableTokens > 0) {
+        tokens = data.prunableTokens
+      } else if (
+        data.observation &&
+        typeof (data.observation as Record<string, unknown>).tokens === 'number' &&
+        ((data.observation as Record<string, unknown>).tokens as number) > 0
+      ) {
+        tokens = (data.observation as Record<string, unknown>).tokens as number
+      } else {
+        // 基于真实 stdout 文本尺寸、Diff 或读取内容字符数折算 (每 4 字符约 1 Token)
+        let payloadChars = 0
+        if (outputLines.length > 0) {
+          payloadChars += outputLines.join('\n').length
+        }
+        if (typeof data.payload?.diff === 'string') {
+          payloadChars += data.payload.diff.length
+        }
+        if (typeof data.payload?.content === 'string') {
+          payloadChars += data.payload.content.length
+        }
+        if (typeof data.payload?.command === 'string') {
+          payloadChars += data.payload.command.length
+        }
+
+        // 若上述均为空，依据 summary 或 rawPayloadPreview 尺寸折算
+        if (payloadChars === 0) {
+          payloadChars = data.summary?.length || (rawPayloadPreview ? rawPayloadPreview.length : 40)
+        }
+        tokens = Math.max(1, Math.ceil(payloadChars / 4))
       }
 
       let rawDetail = ''
@@ -1508,58 +1541,6 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     [setNodes, setEdges, setWatermark]
   )
 
-  /**
-   * 一键执行上下文剪枝：将冗余工具调用折叠压缩为摘要，释放 Token 水位
-   */
-  const pruneContext = useCallback(() => {
-    const currentPrunable = watermark.prunableTools
-    const targetPrunable = Math.min(currentPrunable, 4000)
-    const reclaimed = Math.max(0, currentPrunable - targetPrunable) || 42000
-
-    setIsPruned(true)
-    setReclaimedTokens(reclaimed)
-    setWatermark((prev) => ({
-      ...prev,
-      prunableTools: targetPrunable,
-    }))
-
-    setNodes((prevNodes) =>
-      prevNodes.map((node) => {
-        const currentData = node.data as unknown as AgentNodeData
-        const isPrunable =
-          currentData.gesture === 'bash' ||
-          currentData.gesture === 'edit' ||
-          currentData.gesture === 'read' ||
-          Boolean(currentData.observation)
-        if (isPrunable) {
-          return {
-            ...node,
-            data: {
-              ...currentData,
-              pruned: true,
-            } satisfies AgentNodeData,
-          }
-        }
-        return node
-      })
-    )
-
-    if (bridge.isConnected) {
-      const currentActiveSid = activeSessionIdRef.current || DEFAULT_SESSION_ID
-      bridge.sendTelemetry({
-        traceId: currentActiveSid,
-        sessionId: currentActiveSid,
-        nodeId: 'context-watermark',
-        type: 'context_pruned',
-        watermark: {
-          ...watermark,
-          prunableTools: targetPrunable,
-        },
-        reclaimedTokens: reclaimed,
-        timestamp: Date.now(),
-      })
-    }
-  }, [watermark, bridge, setNodes])
 
   /**
    * 重置上下文水位至初始基准
@@ -1710,6 +1691,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
           ...currentWatermark,
           activeTurns: currentWatermark.activeTurns + (delta.activeTurns ?? 0),
           prunableTools: currentWatermark.prunableTools + (delta.prunableTools ?? 0),
+          provenance: 'live',
         }
         setWatermark(currentWatermark)
 
@@ -1979,7 +1961,6 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}) {
     setWatermark,
     isPruned,
     reclaimedTokens,
-    pruneContext,
     resetWatermark,
     prunableItems,
     assertionEngine,

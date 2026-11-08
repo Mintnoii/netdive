@@ -13,12 +13,30 @@ import type {
   TelemetryGesture,
   MacroTurnGroup,
   MacroTurnStatus,
+  ContextWatermark,
+  TurnTokenBreakdown,
+  TurnCompoundNode,
+  ContextPartKind,
+  ContextItem,
+  ContextPart,
+  ContextPrompt,
 } from '../types/telemetry'
-export type { MacroTurnGroup, MacroTurnStatus }
+export type {
+  MacroTurnGroup,
+  MacroTurnStatus,
+  ContextWatermark,
+  TurnTokenBreakdown,
+  TurnCompoundNode,
+  ContextPartKind,
+  ContextItem,
+  ContextPart,
+  ContextPrompt,
+}
 import { normalizeObservationOutput } from '../types/telemetry'
 import type { AgentNodeData } from '../components/AgentNode'
 import { extractRealIntent } from './agentNodeLOD'
 export { extractRealIntent } from './agentNodeLOD'
+import { resolveContextWindow } from './modelWindows'
 
 /** 解析后的会话元数据契约 */
 export interface SessionMetadata {
@@ -41,6 +59,7 @@ export interface SessionMetadata {
 export interface ParsedTranscript {
   session: SessionMetadata
   events: TelemetryEvent[]
+  watermark?: ContextWatermark
 }
 
 /**
@@ -131,6 +150,44 @@ export function formatToolTitle(toolName: string, args?: Record<string, unknown>
 }
 
 /**
+ * 将 sections 键名按规则映射至 ContextPartKind (键名小写匹配)
+ */
+function mapSectionKeyToPartKind(key: string): ContextPartKind {
+  const k = key.toLowerCase()
+  if (/^(systemprompt|preamble|rules|docs|addendum|guidelines|instructions|system|prompt)$/.test(k)) {
+    return 'system'
+  }
+  if (/^(tools|tool)$/.test(k)) {
+    return 'tools'
+  }
+  if (/^(skills|skill)$/.test(k)) {
+    return 'skills'
+  }
+  if (/^(memory|agents|context|memoryfiles|claudemd)$/.test(k)) {
+    return 'memory'
+  }
+  return 'system'
+}
+
+/**
+ * 从事件 title 与工具入参中提取文件标识路径，取不到则降级为 title
+ */
+function extractFileIdentifier(title: string, toolArgs?: Record<string, unknown>): string {
+  if (toolArgs) {
+    const p = toolArgs.path ?? toolArgs.file_path ?? toolArgs.filePath ?? toolArgs.file
+    if (typeof p === 'string' && p.trim()) {
+      return p.trim()
+    }
+  }
+  const trimmed = title.trim()
+  const spaceIdx = trimmed.indexOf(' ')
+  if (spaceIdx > 0 && spaceIdx < trimmed.length - 1) {
+    return trimmed.slice(spaceIdx + 1).trim()
+  }
+  return trimmed
+}
+
+/**
  * 从文本块提取可读字符串
  */
 function extractTextContent(content: unknown): string {
@@ -151,6 +208,84 @@ function extractTextContent(content: unknown): string {
   return ''
 }
 
+/** 提取的原生使用量结构 */
+export interface ExtractedUsage {
+  input: number
+  output: number
+  cacheRead: number
+  reasoning: number
+  total: number
+}
+
+/**
+ * 从 JSONL 记录或消息中提取真实 usage
+ * 兼容 Pi 格式 (input, output, cacheRead, reasoning) 与 Claude Code 格式 (input_tokens, cache_read_input_tokens 等)
+ */
+export function extractUsageFromRecord(
+  record: Record<string, unknown>,
+  msg?: Record<string, unknown>
+): ExtractedUsage | undefined {
+  const usageObj =
+    (msg?.usage as Record<string, unknown>) ||
+    (record.usage as Record<string, unknown>) ||
+    (msg?.token_usage as Record<string, unknown>) ||
+    (record.token_usage as Record<string, unknown>)
+
+  if (!usageObj || typeof usageObj !== 'object') {
+    return undefined
+  }
+
+  const input =
+    Number(
+      usageObj.input ??
+        usageObj.input_tokens ??
+        usageObj.inputTokens ??
+        usageObj.prompt_tokens ??
+        usageObj.promptTokens ??
+        0
+    ) || 0
+
+  const output =
+    Number(
+      usageObj.output ??
+        usageObj.output_tokens ??
+        usageObj.outputTokens ??
+        usageObj.completion_tokens ??
+        usageObj.completionTokens ??
+        0
+    ) || 0
+
+  const cacheRead =
+    Number(
+      usageObj.cacheRead ??
+        usageObj.cache_read ??
+        usageObj.cacheReadTokens ??
+        usageObj.cache_read_input_tokens ??
+        usageObj.cacheReadInputTokens ??
+        0
+    ) || 0
+
+  const reasoning =
+    Number(
+      usageObj.reasoning ??
+        usageObj.reasoning_tokens ??
+        usageObj.reasoningTokens ??
+        usageObj.thinking_tokens ??
+        usageObj.thinkingTokens ??
+        0
+    ) || 0
+
+  const total =
+    Number(
+      usageObj.total ??
+        usageObj.total_tokens ??
+        usageObj.totalTokens ??
+        (input + output)
+    ) || (input + output)
+
+  return { input, output, cacheRead, reasoning, total }
+}
+
 /** 解析器运行期内部状态上下文 */
 interface ParserContext {
   session: SessionMetadata
@@ -161,6 +296,92 @@ interface ParserContext {
   turnCounter: number
   isPiSession: boolean
   isClaudeSession: boolean
+  lastUsage?: ExtractedUsage
+  systemTokens: number
+  totalToolTokens: number
+  systemText: string
+  sectionsMap: Map<string, string>
+  fileItems: Map<string, ContextItem>
+  resultItems: Map<string, ContextItem>
+  turnItems: ContextItem[]
+  toolCallInfoMap: Map<
+    string,
+    {
+      gesture: TelemetryGesture
+      toolName: string
+      fileIdentifier?: string
+      currentTokens: number
+    }
+  >
+}
+
+/**
+ * 提取系统提示词及 sections 的真实 Token 尺寸与分块
+ */
+function handleSystemMessage(record: Record<string, unknown>, ctx: ParserContext): boolean {
+  // 扫描 sections 字段 (Pi 第一条消息或全局 sections)
+  const sections = (record.sections || (record.message as Record<string, unknown> | undefined)?.sections) as unknown
+  if (sections && typeof sections === 'object') {
+    let sectionChars = 0
+    if (Array.isArray(sections)) {
+      for (let i = 0; i < sections.length; i++) {
+        const s = sections[i]
+        let key = `section-${i}`
+        let valStr = ''
+        if (typeof s === 'string') {
+          valStr = s
+        } else if (s && typeof s === 'object') {
+          const obj = s as Record<string, unknown>
+          if (typeof obj.name === 'string') key = obj.name
+          else if (typeof obj.key === 'string') key = obj.key
+          const content = obj.content ?? obj.text
+          if (typeof content === 'string') valStr = content
+          else valStr = JSON.stringify(s)
+        }
+        if (valStr) {
+          sectionChars += valStr.length
+          const existing = ctx.sectionsMap.get(key)
+          ctx.sectionsMap.set(key, existing ? `${existing}\n${valStr}` : valStr)
+        }
+      }
+    } else {
+      for (const [key, val] of Object.entries(sections as Record<string, unknown>)) {
+        let valStr = ''
+        if (typeof val === 'string') {
+          valStr = val
+        } else if (val && typeof val === 'object') {
+          valStr = JSON.stringify(val)
+        }
+        if (valStr) {
+          sectionChars += valStr.length
+          const existing = ctx.sectionsMap.get(key)
+          ctx.sectionsMap.set(key, existing ? `${existing}\n${valStr}` : valStr)
+        }
+      }
+    }
+    if (sectionChars > 0) {
+      ctx.systemTokens = Math.max(ctx.systemTokens, Math.ceil(sectionChars / 4))
+    }
+  }
+
+  const isSystemType = record.type === 'system'
+  const msg = record.message as Record<string, unknown> | undefined
+  const isSystemRole = msg?.role === 'system' || record.role === 'system'
+
+  if (isSystemType || isSystemRole) {
+    const content = msg?.content ?? record.content ?? record.text ?? record.system
+    const text = extractTextContent(content)
+    if (text) {
+      ctx.systemTokens = Math.max(ctx.systemTokens, Math.ceil(text.length / 4))
+      ctx.systemText = ctx.systemText ? `${ctx.systemText}\n${text}` : text
+    }
+  }
+
+  if (isSystemType || isSystemRole) {
+    return true
+  }
+
+  return false
 }
 
 /**
@@ -232,7 +453,23 @@ function handlePiUserMessage(
   ctx: ParserContext
 ): void {
   ctx.turnCounter++
-  const userText = extractTextContent(msg.content)
+  let userText = extractTextContent(msg.content)
+
+  // 若用户输入包含 URL 编码的中文路径（如 %E8%85%BE...），安全解码为可读文本
+  if (/%[0-9a-fA-F]{2}/.test(userText)) {
+    try {
+      userText = decodeURIComponent(userText)
+    } catch {
+      userText = userText.replace(/(%[0-9a-fA-F]{2})+/g, (match) => {
+        try {
+          return decodeURIComponent(match)
+        } catch {
+          return match
+        }
+      })
+    }
+  }
+
   const event: TelemetryEvent = {
     traceId: ctx.session.id,
     nodeId: msgId,
@@ -248,6 +485,102 @@ function handlePiUserMessage(
   ctx.events.push(event)
   ctx.idAliasMap.set(msgId, msgId)
   ctx.lastEventId = msgId
+
+  if (userText) {
+    ctx.turnItems.push({
+      tag: 'turn',
+      name: String(ctx.turnCounter),
+      tokens: Math.max(1, Math.ceil(userText.length / 4)),
+      content: userText,
+    })
+  }
+}
+
+/**
+ * 记录工具调用到 files 或 results part 集合
+ */
+function recordToolCallToPrompt(
+  ctx: ParserContext,
+  toolCallId: string,
+  toolName: string,
+  gesture: TelemetryGesture,
+  title: string,
+  toolArgs: Record<string, unknown>
+): void {
+  const isFile = gesture === 'read' || gesture === 'edit'
+  const payloadText = JSON.stringify(toolArgs)
+  const initialTokens = Math.max(1, Math.ceil(payloadText.length / 4))
+  const fileIdentifier = isFile ? extractFileIdentifier(title, toolArgs) : undefined
+
+  if (isFile && fileIdentifier) {
+    const existing = ctx.fileItems.get(fileIdentifier)
+    if (existing) {
+      existing.n = (existing.n ?? 1) + 1
+      existing.tokens += initialTokens
+      existing.tag = gesture === 'read' ? 'read' : 'edit'
+      existing.content = payloadText
+    } else {
+      ctx.fileItems.set(fileIdentifier, {
+        tag: gesture === 'read' ? 'read' : 'edit',
+        name: fileIdentifier,
+        tokens: initialTokens,
+        n: 1,
+        content: payloadText,
+      })
+    }
+  } else {
+    const existing = ctx.resultItems.get(toolName)
+    if (existing) {
+      existing.n = (existing.n ?? 1) + 1
+      existing.tokens += initialTokens
+      existing.tag = 'result'
+      existing.content = payloadText
+    } else {
+      ctx.resultItems.set(toolName, {
+        tag: 'result',
+        name: toolName,
+        tokens: initialTokens,
+        n: 1,
+        content: payloadText,
+      })
+    }
+  }
+
+  ctx.toolCallInfoMap.set(toolCallId, {
+    gesture,
+    toolName,
+    fileIdentifier,
+    currentTokens: initialTokens,
+  })
+}
+
+/**
+ * 依据工具执行结果更新 files 或 results 中对应的 token 与最新观测内容
+ */
+function updateToolResultInPrompt(
+  ctx: ParserContext,
+  toolCallId: string,
+  outputLines: string[]
+): void {
+  const toolInfo = ctx.toolCallInfoMap.get(toolCallId)
+  if (!toolInfo) return
+
+  const outputText = outputLines.join('\n')
+  if (!outputText) return
+
+  const newTokens = Math.max(1, Math.ceil(outputText.length / 4))
+  const diff = newTokens - toolInfo.currentTokens
+  toolInfo.currentTokens = newTokens
+
+  if (toolInfo.fileIdentifier && ctx.fileItems.has(toolInfo.fileIdentifier)) {
+    const item = ctx.fileItems.get(toolInfo.fileIdentifier)!
+    item.tokens += diff
+    item.content = outputText
+  } else if (ctx.resultItems.has(toolInfo.toolName)) {
+    const item = ctx.resultItems.get(toolInfo.toolName)!
+    item.tokens += diff
+    item.content = outputText
+  }
 }
 
 /**
@@ -263,6 +596,11 @@ function handlePiAssistantMessage(
   ctx.turnCounter++
   const content = msg.content
   if (!Array.isArray(content)) return
+
+  const usage = extractUsageFromRecord(record, msg)
+  if (usage) {
+    ctx.lastUsage = usage
+  }
 
   let stepParentId = parentMsgId
   const timestamp = typeof record.timestamp === 'string' ? new Date(record.timestamp).getTime() : Date.now()
@@ -285,6 +623,7 @@ function handlePiAssistantMessage(
         status: 'completed',
         delta: b.thinking,
         timestamp,
+        usage: usage ? { ...usage } : undefined,
       }
       ctx.events.push(event)
       ctx.idAliasMap.set(msgId, thinkNodeId)
@@ -306,11 +645,19 @@ function handlePiAssistantMessage(
         status: 'completed',
         delta: b.text,
         timestamp,
+        usage: usage ? { ...usage } : undefined,
       }
       ctx.events.push(event)
       ctx.idAliasMap.set(msgId, textNodeId)
       stepParentId = textNodeId
       ctx.lastEventId = textNodeId
+
+      ctx.turnItems.push({
+        tag: 'turn',
+        name: String(ctx.turnCounter),
+        tokens: Math.max(1, Math.ceil(b.text.length / 4)),
+        content: b.text,
+      })
       continue
     }
 
@@ -334,12 +681,15 @@ function handlePiAssistantMessage(
         payload: toolArgs,
         delta: `调用 ${toolName}`,
         timestamp,
+        usage: usage ? { ...usage } : undefined,
       }
       ctx.events.push(event)
       ctx.toolCallEventMap.set(toolCallId, event)
       ctx.idAliasMap.set(msgId, toolCallId)
       stepParentId = toolCallId
       ctx.lastEventId = toolCallId
+
+      recordToolCallToPrompt(ctx, toolCallId, toolName, gesture, title, toolArgs)
     }
   }
 }
@@ -362,11 +712,26 @@ function handlePiToolResult(
   if (targetEvent) {
     targetEvent.status = isError ? 'failed' : 'completed'
     targetEvent.isCorrectionBranch = isError
+
+    const outputText = outputLines.join('\n')
+    const payloadChars = targetEvent.payload ? JSON.stringify(targetEvent.payload).length : 0
+    const totalChars = outputText.length + payloadChars
+    const toolTokens = Math.max(1, Math.ceil(totalChars / 4))
+
     targetEvent.observation = {
       exitCode,
       output: outputLines,
       command: (targetEvent.payload?.command as string) || undefined,
+      tokens: toolTokens,
+      linesCount: outputLines.length,
+      charsCount: totalChars,
     }
+    if (targetEvent.payload) {
+      targetEvent.payload.prunableTokens = toolTokens
+      targetEvent.payload.linesCount = outputLines.length
+    }
+    ctx.totalToolTokens += toolTokens
+
     if (outputLines.length > 0) {
       targetEvent.delta = outputLines.slice(0, 3).join('\n')
     }
@@ -375,6 +740,8 @@ function handlePiToolResult(
     }
     ctx.lastEventId = targetEvent.nodeId
   }
+
+  updateToolResultInPrompt(ctx, toolCallId, outputLines)
 }
 
 /**
@@ -437,23 +804,54 @@ function handleClaudeUserMessage(
     if (targetEvent) {
       targetEvent.status = isError ? 'failed' : 'completed'
       targetEvent.isCorrectionBranch = isError
+
+      const outputText = outputLines.join('\n')
+      const payloadChars = targetEvent.payload ? JSON.stringify(targetEvent.payload).length : 0
+      const totalChars = outputText.length + payloadChars
+      const toolTokens = Math.max(1, Math.ceil(totalChars / 4))
+
       targetEvent.observation = {
         exitCode,
         output: outputLines,
         command: (targetEvent.payload?.command as string) || undefined,
+        tokens: toolTokens,
+        linesCount: outputLines.length,
+        charsCount: totalChars,
       }
+      if (targetEvent.payload) {
+        targetEvent.payload.prunableTokens = toolTokens
+        targetEvent.payload.linesCount = outputLines.length
+      }
+      ctx.totalToolTokens += toolTokens
+
       if (outputLines.length > 0) {
         targetEvent.delta = outputLines.slice(0, 3).join('\n')
       }
       ctx.idAliasMap.set(uuid, targetEvent.nodeId)
       ctx.lastEventId = targetEvent.nodeId
     }
+
+    updateToolResultInPrompt(ctx, toolCallId, outputLines)
     return
   }
 
   // 普通用户需求指令
   ctx.turnCounter++
-  const userText = extractTextContent(msg.content)
+  let userText = extractTextContent(msg.content)
+  if (/%[0-9a-fA-F]{2}/.test(userText)) {
+    try {
+      userText = decodeURIComponent(userText)
+    } catch {
+      userText = userText.replace(/(%[0-9a-fA-F]{2})+/g, (match) => {
+        try {
+          return decodeURIComponent(match)
+        } catch {
+          return match
+        }
+      })
+    }
+  }
+
   const event: TelemetryEvent = {
     traceId: ctx.session.id,
     nodeId: uuid,
@@ -469,6 +867,15 @@ function handleClaudeUserMessage(
   ctx.events.push(event)
   ctx.idAliasMap.set(uuid, uuid)
   ctx.lastEventId = uuid
+
+  if (userText) {
+    ctx.turnItems.push({
+      tag: 'turn',
+      name: String(ctx.turnCounter),
+      tokens: Math.max(1, Math.ceil(userText.length / 4)),
+      content: userText,
+    })
+  }
 }
 
 /**
@@ -482,6 +889,11 @@ function handleClaudeAssistantMessage(
   ctx: ParserContext
 ): void {
   if (!Array.isArray(msg.content)) return
+
+  const usage = extractUsageFromRecord(record, msg)
+  if (usage) {
+    ctx.lastUsage = usage
+  }
 
   ctx.turnCounter++
   let stepParentId = parentUuid
@@ -505,6 +917,7 @@ function handleClaudeAssistantMessage(
         status: 'completed',
         delta: b.thinking,
         timestamp,
+        usage: usage ? { ...usage } : undefined,
       }
       ctx.events.push(event)
       ctx.idAliasMap.set(uuid, thinkNodeId)
@@ -526,11 +939,19 @@ function handleClaudeAssistantMessage(
         status: 'completed',
         delta: b.text,
         timestamp,
+        usage: usage ? { ...usage } : undefined,
       }
       ctx.events.push(event)
       ctx.idAliasMap.set(uuid, textNodeId)
       stepParentId = textNodeId
       ctx.lastEventId = textNodeId
+
+      ctx.turnItems.push({
+        tag: 'turn',
+        name: String(ctx.turnCounter),
+        tokens: Math.max(1, Math.ceil(b.text.length / 4)),
+        content: b.text,
+      })
       continue
     }
 
@@ -554,12 +975,15 @@ function handleClaudeAssistantMessage(
         payload: toolArgs,
         delta: `执行 ${toolName}`,
         timestamp,
+        usage: usage ? { ...usage } : undefined,
       }
       ctx.events.push(event)
       ctx.toolCallEventMap.set(toolCallId, event)
       ctx.idAliasMap.set(uuid, toolCallId)
       stepParentId = toolCallId
       ctx.lastEventId = toolCallId
+
+      recordToolCallToPrompt(ctx, toolCallId, toolName, gesture, title, toolArgs)
     }
   }
 }
@@ -609,16 +1033,19 @@ function processTranscriptRecord(record: Record<string, unknown>, ctx: ParserCon
     return
   }
 
-  // 2. Pi 会话及模型元数据
+  // 2. 系统提示词与 sections
+  if (handleSystemMessage(record, ctx)) return
+
+  // 3. Pi 会话及模型元数据
   if (handlePiMetadata(record, ctx)) return
 
-  // 3. Claude Code 元数据
+  // 4. Claude Code 元数据
   if (handleClaudeMetadata(record, ctx)) return
 
-  // 4. Pi 消息流
+  // 5. Pi 消息流
   if (handlePiMessage(record, ctx)) return
 
-  // 5. Claude Code 消息流
+  // 6. Claude Code 消息流
   if (handleClaudeMessage(record, ctx)) return
 }
 
@@ -673,6 +1100,14 @@ export function parseTranscript(jsonlText: string): ParsedTranscript {
     turnCounter: 0,
     isPiSession: false,
     isClaudeSession: false,
+    systemTokens: 0,
+    totalToolTokens: 0,
+    systemText: '',
+    sectionsMap: new Map(),
+    fileItems: new Map(),
+    resultItems: new Map(),
+    turnItems: [],
+    toolCallInfoMap: new Map(),
   }
 
   for (const rawLine of lines) {
@@ -695,7 +1130,197 @@ export function parseTranscript(jsonlText: string): ParsedTranscript {
   if (ctx.isPiSession) ctx.session.format = 'pi'
   else if (ctx.isClaudeSession) ctx.session.format = 'claude'
 
-  return { session: ctx.session, events: ctx.events }
+  // 构建全维上下文水位 ContextWatermark
+  // 启发式粗估：JSONL 未记录 system 段时按 12k 兜底（非真实值）
+  const systemPromptTokens = ctx.systemTokens > 0 ? ctx.systemTokens : 12000
+  const toolOutputsTokens = ctx.totalToolTokens
+  const cacheReadTokens = ctx.lastUsage?.cacheRead || 0
+  const reasoningTokens = ctx.lastUsage?.reasoning || 0
+
+  let totalTokens = 0
+  let activeTurnsTokens = 0
+  let convHistoryTokens = 0
+
+  if (ctx.lastUsage) {
+    totalTokens = ctx.lastUsage.total || (ctx.lastUsage.input + ctx.lastUsage.output)
+    convHistoryTokens = Math.max(0, ctx.lastUsage.input - systemPromptTokens - toolOutputsTokens)
+    activeTurnsTokens = convHistoryTokens + reasoningTokens + ctx.lastUsage.output
+  } else {
+    // 启发式粗估计算
+    // 启发式粗估：无 real usage 时按事件数粗估活跃轮次 token（非真实值）
+    activeTurnsTokens = Math.max(2000, ctx.events.length * 300)
+    convHistoryTokens = activeTurnsTokens
+    totalTokens = systemPromptTokens + activeTurnsTokens + toolOutputsTokens
+  }
+
+  const resolvedWindow = resolveContextWindow(ctx.session.modelId)
+
+  const watermark: ContextWatermark = {
+    totalLimit: resolvedWindow.window,
+    maxCapacity: resolvedWindow.window,
+    windowSource: resolvedWindow.source,
+    systemPrompt: systemPromptTokens,
+    ltm: 0,
+    activeTurns: activeTurnsTokens,
+    prunableTools: toolOutputsTokens,
+    total: totalTokens,
+    conversationHistory: convHistoryTokens,
+    toolOutputs: toolOutputsTokens,
+    cacheRead: cacheReadTokens,
+    reasoningTokens,
+    provenance: ctx.lastUsage ? 'counted' : 'estimated',
+  }
+
+  // 初始化 Prompt 采集累积器
+  const partItemsMap: Record<ContextPartKind, ContextItem[]> = {
+    system: [],
+    tools: [],
+    skills: [],
+    memory: [],
+    files: [],
+    results: [],
+    chat: [],
+  }
+
+  // 1. sectionsMap 映射条目
+  for (const [key, val] of ctx.sectionsMap.entries()) {
+    const kind = mapSectionKeyToPartKind(key)
+    partItemsMap[kind].push({
+      tag: 'prompt',
+      name: key,
+      tokens: Math.max(1, Math.ceil(val.length / 4)),
+      content: val,
+    })
+  }
+
+  // 2. {type:'system'} / role:'system' 合并条目
+  if (ctx.systemText) {
+    partItemsMap.system.push({
+      tag: 'prompt',
+      name: 'prompt',
+      tokens: Math.max(1, Math.ceil(ctx.systemText.length / 4)),
+      content: ctx.systemText,
+    })
+  }
+
+  // 3. 文件读写条目 (files)
+  partItemsMap.files = Array.from(ctx.fileItems.values())
+
+  // 4. 其余工具条目 (results)
+  partItemsMap.results = Array.from(ctx.resultItems.values())
+
+  // 5. 对话轮次条目 (chat)，若超过 30 条将最早项聚合为 turns 项
+  let chatItems = [...ctx.turnItems]
+  if (chatItems.length > 30) {
+    const overflowCount = chatItems.length - 30
+    const headItems = chatItems.slice(0, overflowCount)
+    const tailItems = chatItems.slice(overflowCount)
+    const mergedTokens = headItems.reduce((acc, it) => acc + it.tokens, 0)
+    const mergedItem: ContextItem = {
+      tag: 'turns',
+      name: '0',
+      tokens: mergedTokens,
+      n: overflowCount,
+    }
+    chatItems = [mergedItem, ...tailItems]
+  }
+  partItemsMap.chat = chatItems
+
+  // 6. 构造七大固定顺序 parts，items 依 tokens 降序排列
+  const PART_ORDER: ContextPartKind[] = [
+    'system',
+    'tools',
+    'skills',
+    'memory',
+    'files',
+    'results',
+    'chat',
+  ]
+
+  const parts: ContextPart[] = PART_ORDER.map((kind) => {
+    const items = partItemsMap[kind]
+    items.sort((a, b) => b.tokens - a.tokens)
+    const tokens = items.reduce((acc, it) => acc + it.tokens, 0)
+    return { kind, tokens, items }
+  })
+
+  // 7. 严格对账：Σ parts.tokens === watermark.total (Prompt Reconciliation)
+  const watermarkTotal = watermark.total ?? totalTokens
+  const sum = parts.reduce((acc, p) => acc + p.tokens, 0)
+
+  if (sum < watermarkTotal) {
+    const diff = watermarkTotal - sum
+    const chatPart = parts.find((p) => p.kind === 'chat')!
+    chatPart.items.push({
+      tag: 'more',
+      name: 'more',
+      tokens: diff,
+    })
+    chatPart.items.sort((a, b) => b.tokens - a.tokens)
+    chatPart.tokens += diff
+  } else if (sum > watermarkTotal && sum > 0) {
+    // 比例缩放每个 item 与 part
+    for (const part of parts) {
+      for (const item of part.items) {
+        item.tokens = Math.max(1, Math.round((item.tokens * watermarkTotal) / sum))
+      }
+      part.tokens = part.items.reduce((acc, it) => acc + it.tokens, 0)
+    }
+
+    let currentSum = parts.reduce((acc, p) => acc + p.tokens, 0)
+    let diff = watermarkTotal - currentSum
+
+    if (diff !== 0) {
+      const allItems = parts.flatMap((p) => p.items)
+      if (allItems.length > 0) {
+        const maxItem = allItems.reduce(
+          (prev, curr) => (curr.tokens > prev.tokens ? curr : prev),
+          allItems[0]
+        )
+        maxItem.tokens = Math.max(1, maxItem.tokens + diff)
+
+        for (const part of parts) {
+          part.tokens = part.items.reduce((acc, it) => acc + it.tokens, 0)
+        }
+        currentSum = parts.reduce((acc, p) => acc + p.tokens, 0)
+        diff = watermarkTotal - currentSum
+
+        if (diff !== 0) {
+          for (const item of allItems) {
+            if (diff === 0) break
+            if (diff > 0) {
+              item.tokens++
+              diff--
+            } else if (diff < 0 && item.tokens > 1) {
+              item.tokens--
+              diff++
+            }
+          }
+          for (const part of parts) {
+            part.tokens = part.items.reduce((acc, it) => acc + it.tokens, 0)
+          }
+        }
+      }
+    }
+
+    for (const part of parts) {
+      part.items.sort((a, b) => b.tokens - a.tokens)
+    }
+  }
+
+  // 8. 组装 ContextPrompt 并挂载至 ContextWatermark
+  const prompt: ContextPrompt = {
+    tokens: watermarkTotal,
+    window: watermark.maxCapacity ?? watermark.totalLimit ?? resolvedWindow.window,
+    parts,
+  }
+  watermark.prompt = prompt
+
+  if (ctx.events.length > 0) {
+    ctx.events[ctx.events.length - 1].watermark = watermark
+  }
+
+  return { session: ctx.session, events: ctx.events, watermark }
 }
 
 /**
@@ -1217,6 +1842,17 @@ export function eventsToFlowNodesAndEdges(
       nodeSummary = `${nodeSummary.slice(0, 280)}...`
     }
 
+    const toolTokens =
+      (typeof ev.observation?.tokens === 'number' ? ev.observation.tokens : 0) ||
+      (typeof ev.payload?.prunableTokens === 'number' ? (ev.payload.prunableTokens as number) : 0) ||
+      (ev.gesture === 'read' || ev.gesture === 'edit' || ev.gesture === 'bash'
+        ? Math.ceil(
+            ((ev.observation?.output ? normalizeObservationOutput(ev.observation.output).join('\n').length : 0) +
+              (ev.payload ? JSON.stringify(ev.payload).length : 0)) /
+              4
+          )
+        : undefined)
+
     // 瘦节点纯视图模型 (Lean View-Model)：剔除大型 payload / observation，保证画布 60fps 运镜
     const nodeData: AgentNodeData = {
       nodeId: ev.nodeId,
@@ -1228,6 +1864,7 @@ export function eventsToFlowNodesAndEdges(
       isCorrectionBranch: ev.isCorrectionBranch,
       isAggregated: ev.isAggregated,
       aggregateCount: ev.aggregateCount,
+      prunableTokens: toolTokens || undefined,
     }
 
     const node: Node = {
@@ -1269,7 +1906,41 @@ export function eventsToFlowNodesAndEdges(
  */
 function extractIntentSentence(text?: string): string {
   if (!text) return ''
-  const clean = text.replace(/^[#>\s*`-]+/, '').trim()
+  // 1. 若包含 URL 编码的中文字符（如 %E8%85%BE%E8%AE%AF），先优雅安全解码，杜绝出现长串乱码 %xx
+  let decoded = text
+  if (/%[0-9a-fA-F]{2}/.test(text)) {
+    try {
+      decoded = decodeURIComponent(text)
+    } catch {
+      // 容错降级：逐段正则自愈解码
+      decoded = text.replace(/(%[0-9a-fA-F]{2})+/g, (match) => {
+        try {
+          return decodeURIComponent(match)
+        } catch {
+          return match
+        }
+      })
+    }
+  }
+
+  // 2. 若文本以 ## Design Feedback: 开头，提纯真实反馈或文件语义，杜绝输出天书级长路径
+  if (/^#*\s*Design Feedback:\s*/i.test(decoded)) {
+    // 优先提取 Design Feedback 下面的真实反馈内容（如 Feedback: xxx）
+    const feedbackMatch = decoded.match(/\*\*Feedback:\*\*\s*([^\r\n]+)/i)
+    if (feedbackMatch && feedbackMatch[1].trim()) {
+      const fb = feedbackMatch[1].trim()
+      return fb.length > 90 ? `${fb.slice(0, 87)}...` : fb
+    }
+    // 若无 Feedback 标记，提取针对的文件名
+    const pathMatch = decoded.match(/Design Feedback:\s*([^\r\n]+)/i)
+    if (pathMatch && pathMatch[1].trim()) {
+      const cleanPath = pathMatch[1].trim().replace(/^file:\/\/\/?/i, '').replace(/^[A-Za-z]:\//, '')
+      const fileName = basename(cleanPath)
+      return `界面走查反馈: ${fileName}`
+    }
+  }
+
+  const clean = decoded.replace(/^[#>\s*`-]+/, '').trim()
   const firstLine = clean.split(/\r?\n/)[0]?.trim() || clean
   const match = firstLine.match(/^(.+?)(?:[。！？!?；;]|$)/)
   const candidate = (match && match[1] ? match[1] : firstLine).trim()
@@ -1402,22 +2073,72 @@ function buildMacroTurnGroup(group: TelemetryEvent[], turnIndex: number): MacroT
   }
   const totalDuration = formatDurationMs(durationMs)
 
-  // Token 消耗粗略估算
-  let totalInput = 0
-  let totalOutput = 0
-  let prunable = 0
+  // Token 消耗提取与派生
+  // 1. 扫描 group 内是否有由真实 message.usage 注入的 usage
+  const evWithUsage = group.find((e) => e.usage || (e.payload?.usage as ExtractedUsage | undefined))
+  const realUsage = evWithUsage?.usage || (evWithUsage?.payload?.usage as ExtractedUsage | undefined)
+
+  // 2. 统计当前回合内所有外部工具产生的真实载荷 Token (prunable tools)
+  let toolOutputs = 0
   for (const ev of group) {
-    const inChars = ev.payload ? JSON.stringify(ev.payload).length : 0
-    const outChars =
-      (ev.observation?.output ? normalizeObservationOutput(ev.observation.output).join('').length : 0) +
-      (ev.delta?.length || 0)
-    const inTokens = Math.ceil(inChars / 4)
-    const outTokens = Math.ceil(outChars / 4)
-    totalInput += inTokens
-    totalOutput += outTokens
-    if (ev.gesture === 'read' || ev.gesture === 'edit' || ev.gesture === 'bash') {
-      prunable += inTokens + outTokens
+    if (ev.actor !== 'Human Operator' && ev.gesture && ev.gesture !== 'think' && ev.gesture !== 'gate') {
+      const toolTokens =
+        (typeof ev.observation?.tokens === 'number' ? ev.observation.tokens : 0) ||
+        (typeof ev.payload?.prunableTokens === 'number' ? (ev.payload.prunableTokens as number) : 0) ||
+        Math.ceil(
+          ((ev.observation?.output ? normalizeObservationOutput(ev.observation.output).join('\n').length : 0) +
+            (ev.payload ? JSON.stringify(ev.payload).length : 0)) /
+            4
+        )
+      toolOutputs += toolTokens
     }
+  }
+
+  let turnInput = 0
+  let turnOutput = 0
+  let turnTotal = 0
+  let turnCacheRead = 0
+  let turnReasoning = 0
+  let turnConvHistory = 0
+
+  if (realUsage) {
+    turnInput = realUsage.input ?? 0
+    turnOutput = realUsage.output ?? 0
+    turnCacheRead = realUsage.cacheRead ?? 0
+    turnReasoning = realUsage.reasoning ?? 0
+    turnTotal = realUsage.total ?? (turnInput + turnOutput)
+    turnConvHistory = Math.max(0, turnInput - toolOutputs)
+  } else {
+    // 启发式粗估计算
+    let totalInChars = 0
+    let totalOutChars = 0
+    for (const ev of group) {
+      const inChars = ev.payload ? JSON.stringify(ev.payload).length : 0
+      const outChars =
+        (ev.observation?.output ? normalizeObservationOutput(ev.observation.output).join('').length : 0) +
+        (ev.delta?.length || 0)
+      totalInChars += inChars
+      totalOutChars += outChars
+    }
+    turnInput = Math.ceil(totalInChars / 4)
+    turnOutput = Math.ceil(totalOutChars / 4)
+    turnTotal = turnInput + turnOutput
+    turnCacheRead = 0
+    turnReasoning = 0
+    turnConvHistory = Math.max(0, turnInput - toolOutputs)
+  }
+
+  const tokenBreakdown: TurnTokenBreakdown = {
+    input: turnInput,
+    output: turnOutput,
+    total: turnTotal,
+    prunable: toolOutputs,
+    cacheRead: turnCacheRead,
+    reasoningTokens: turnReasoning,
+    systemPrompt: 0,
+    toolOutputs,
+    conversationHistory: turnConvHistory,
+    provenance: realUsage ? 'counted' : 'estimated',
   }
 
   return {
@@ -1428,12 +2149,7 @@ function buildMacroTurnGroup(group: TelemetryEvent[], turnIndex: number): MacroT
     status,
     totalDuration,
     durationMs,
-    tokenBreakdown: {
-      input: totalInput,
-      output: totalOutput,
-      total: totalInput + totalOutput,
-      prunable,
-    },
+    tokenBreakdown,
     toolCounts,
     subEvents: group,
     actor: group.find((e) => e.actor)?.actor || 'Pi (Coordinator)',

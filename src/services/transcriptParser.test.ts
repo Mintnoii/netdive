@@ -11,8 +11,10 @@ import {
   aggregateEventsIntoTurns,
   turnsToFlowNodesAndEdges,
   extractRealIntent,
+  extractUsageFromRecord,
 } from './transcriptParser'
 import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from './sampleTranscript'
+import { resolveContextWindow } from './modelWindows'
 import type { TelemetryEvent, MacroTurnGroup } from '../types/telemetry'
 
 describe('NetDive Transcript Parser Engine', () => {
@@ -1566,6 +1568,285 @@ describe('NetDive Transcript Parser Engine', () => {
       const drillCallback = result3.nodes[0].data.onDrillDown as (id: string) => void
       drillCallback('turn-drill-test')
       assert.equal(drilledId, 'turn-drill-test')
+    })
+  })
+
+  describe('Real Token Watermark & Usage Extraction Contract (Task 1.4)', () => {
+    describe('extractUsageFromRecord pure utility', () => {
+      it('extracts Pi camelCase usage correctly', () => {
+        const usage = extractUsageFromRecord({
+          usage: {
+            input: 1250,
+            output: 450,
+            cacheRead: 8500,
+            reasoning: 350,
+            total: 10550,
+          },
+        })
+        assert.deepEqual(usage, {
+          input: 1250,
+          output: 450,
+          cacheRead: 8500,
+          reasoning: 350,
+          total: 10550,
+        })
+      })
+
+      it('extracts Claude snake_case usage with Anthropic token fields correctly', () => {
+        const usage = extractUsageFromRecord({
+          usage: {
+            input_tokens: 3200,
+            output_tokens: 800,
+            cache_read_input_tokens: 24000,
+            thinking_tokens: 600,
+          },
+        })
+        assert.deepEqual(usage, {
+          input: 3200,
+          output: 800,
+          cacheRead: 24000,
+          reasoning: 600,
+          total: 4000, // input + output when total is omitted
+        })
+      })
+
+      it('extracts usage from msg.usage when record.usage is absent', () => {
+        const usage = extractUsageFromRecord(
+          {},
+          {
+            usage: {
+              prompt_tokens: 1800,
+              completion_tokens: 500,
+              cacheReadTokens: 12000,
+              reasoningTokens: 200,
+            },
+          }
+        )
+        assert.deepEqual(usage, {
+          input: 1800,
+          output: 500,
+          cacheRead: 12000,
+          reasoning: 200,
+          total: 2300,
+        })
+      })
+
+      it('returns undefined gracefully when usage is not an object', () => {
+        assert.equal(extractUsageFromRecord({}), undefined)
+        assert.equal(extractUsageFromRecord({ usage: null }), undefined)
+        assert.equal(extractUsageFromRecord({ usage: '100' }), undefined)
+      })
+    })
+
+    describe('Pi JSONL Real Usage & Watermark Extraction', () => {
+      it('extracts usage tokens, tool outputs and computes session watermark accurately', () => {
+        const piJsonl = [
+          JSON.stringify({
+            type: 'session',
+            id: 'pi-token-session-1',
+            timestamp: '2026-11-08T10:00:00.000Z',
+          }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-sys-1',
+            message: {
+              role: 'system',
+              content: 'You are an autonomous AI Agent specialized in refactoring.',
+            },
+          }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-user-1',
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: '优化核心拓扑算法并编写单元测试' }],
+            },
+          }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-ast-1',
+            message: {
+              role: 'assistant',
+              usage: {
+                input: 2400,
+                output: 480,
+                cacheRead: 16000,
+                reasoning: 220,
+                total: 19100,
+              },
+              content: [
+                {
+                  type: 'thinking',
+                  thinking: '需要读取拓扑排版算法，并执行单测以获取执行耗时。',
+                },
+                {
+                  type: 'toolCall',
+                  id: 'call_read_topo',
+                  name: 'read',
+                  arguments: { path: 'src/services/topology.ts' },
+                },
+              ],
+            },
+          }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-tool-res-1',
+            message: {
+              role: 'toolResult',
+              toolCallId: 'call_read_topo',
+              toolName: 'read',
+              content: [
+                {
+                  type: 'text',
+                  text: 'export function layoutDAG() {\n  return { width: 800, height: 600 }\n}',
+                },
+              ],
+              isError: false,
+            },
+          }),
+        ].join('\n')
+
+        const parsed = parseTranscript(piJsonl)
+
+        // 1. 验证 Assistant 节点的 usage 提取
+        const thinkNode = parsed.events.find((e) => e.gesture === 'think')
+        assert(thinkNode, 'Think node must exist')
+        assert.deepEqual(thinkNode.usage, {
+          input: 2400,
+          output: 480,
+          cacheRead: 16000,
+          reasoning: 220,
+          total: 19100,
+        })
+
+        // 2. 验证 Tool Result 节点的真实文本折算 tokens 与 linesCount
+        const toolNode = parsed.events.find((e) => e.nodeId === 'call_read_topo')
+        assert(toolNode, 'Tool node must exist')
+        assert(toolNode.observation)
+        assert.equal(toolNode.observation.linesCount, 3)
+        assert.equal(toolNode.observation.charsCount, 103)
+        assert.equal(toolNode.observation.tokens, 26)
+
+        // 3. 验证 Session 水位全维契约 (ContextWatermark)
+        const watermark = parsed.watermark
+        assert(watermark, 'Watermark must exist')
+        assert.equal(watermark.totalLimit, 200000)
+        assert.equal(watermark.maxCapacity, 200000)
+        assert(watermark.systemPrompt > 0, 'System prompt tokens should be > 0')
+        assert.equal(watermark.cacheRead, 16000)
+        assert.equal(watermark.reasoningTokens, 220)
+        assert.equal(watermark.toolOutputs, 26)
+        assert.equal(watermark.prunableTools, 26)
+        assert(watermark.total! > 0, 'Total tokens should be > 0')
+
+        // 4. 验证末尾事件注入的 watermark
+        assert.deepEqual(parsed.events[parsed.events.length - 1].watermark, watermark)
+      })
+    })
+
+    describe('Claude Code JSONL Real Usage & Watermark Extraction', () => {
+      it('extracts Claude Anthropic usage, large tool result tokens, and MacroTurnGroup tokenBreakdown', () => {
+        const longOutput =
+          'Line 1: OK\nLine 2: Pass\nLine 3: 156 tests completed in 1.4s\nLine 4: memory clean'
+        const claudeJsonl = [
+          JSON.stringify({
+            type: 'user',
+            uuid: 'user-c1',
+            message: {
+              role: 'user',
+              content: '运行自动化回归测试并确认状态',
+            },
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            uuid: 'asst-c1',
+            message: {
+              role: 'assistant',
+              usage: {
+                input_tokens: 5200,
+                output_tokens: 950,
+                cache_read_input_tokens: 48000,
+                thinking_tokens: 420,
+              },
+              content: [
+                {
+                  type: 'thinking',
+                  thinking: '执行 pnpm test 命令查看测试结果',
+                },
+                {
+                  type: 'tool_use',
+                  id: 'call_bash_test_run',
+                  name: 'Bash',
+                  input: { command: 'pnpm test' },
+                },
+              ],
+            },
+          }),
+          JSON.stringify({
+            type: 'user',
+            uuid: 'user-tool-res-1',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'call_bash_test_run',
+                  content: longOutput,
+                  is_error: false,
+                },
+              ],
+            },
+          }),
+        ].join('\n')
+
+        const parsed = parseTranscript(claudeJsonl)
+
+        // 1. 验证 Bash 节点与 usage
+        const bashNode = parsed.events.find((e) => e.nodeId === 'call_bash_test_run')
+        assert(bashNode, 'Bash tool node must exist')
+        assert(bashNode.observation)
+        assert.equal(bashNode.observation.linesCount, 4)
+        // output 80 chars + payload 23 chars = 103 chars => ceil(103 / 4) = 26 tokens
+        assert.equal(bashNode.observation.charsCount, 103)
+        assert.equal(bashNode.observation.tokens, 26)
+
+        // 2. 验证 watermark
+        const wm = parsed.watermark
+        assert(wm)
+        assert.equal(wm.cacheRead, 48000)
+        assert.equal(wm.reasoningTokens, 420)
+        assert.equal(wm.toolOutputs, 26)
+
+        // 3. 验证 aggregateEventsIntoTurns 的 tokenBreakdown 聚合契约
+        const turns = aggregateEventsIntoTurns(parsed.events)
+        assert.equal(turns.length, 1)
+        const turn = turns[0]
+        assert(turn.tokenBreakdown, 'Turn must have tokenBreakdown')
+        assert.equal(turn.tokenBreakdown.cacheRead, 48000)
+        assert.equal(turn.tokenBreakdown.reasoningTokens, 420)
+        assert.equal(turn.tokenBreakdown.input, 5200)
+        assert.equal(turn.tokenBreakdown.output, 950)
+        assert.equal(turn.tokenBreakdown.prunable, 26)
+        assert.equal(turn.tokenBreakdown.toolOutputs, 26)
+      })
+    })
+
+    describe('Baseline REALISTIC_PI_TRANSCRIPT_SAMPLE Watermark Contract', () => {
+      it('calculates full-dimensional watermark for bundled sample without error', () => {
+        const parsed = parseTranscript(REALISTIC_PI_TRANSCRIPT_SAMPLE)
+        const wm = parsed.watermark
+        assert(wm)
+        // 窗口上限应由模型规则表解析（样例模型为 gemini-3.8-flash），不再写死 200k
+        const resolvedWindow = resolveContextWindow(parsed.session.modelId)
+        assert.equal(wm.totalLimit, resolvedWindow.window)
+        assert.equal(wm.maxCapacity, resolvedWindow.window)
+        assert.equal(wm.windowSource, resolvedWindow.source)
+        assert(typeof wm.systemPrompt === 'number')
+        assert(typeof wm.toolOutputs === 'number' && wm.toolOutputs > 0)
+        assert(typeof wm.prunableTools === 'number' && wm.prunableTools > 0)
+        assert(typeof wm.total === 'number' && wm.total > 0)
+        assert(typeof wm.activeTurns === 'number')
+      })
     })
   })
 })

@@ -48,6 +48,59 @@ export interface AssertionResult {
   failureCount?: number
 }
 
+/** 上下文 Prompt 七大固定分类 (对齐 yetone/magpie 真实模型) */
+export type ContextPartKind =
+  | 'system'
+  | 'tools'
+  | 'skills'
+  | 'memory'
+  | 'files'
+  | 'results'
+  | 'chat'
+
+/**
+ * 上下文条目契约 (Context Item)
+ * 每个分类下的细粒度项目
+ */
+export interface ContextItem {
+  /** 条目标签 (例如: prompt / read / edit / result / turn / turns / more / compacted / image) */
+  tag?: string
+  /** 条目名称 (例如: sections 键名、文件名、工具名、轮次序号) */
+  name: string
+  /** Token 消耗尺寸 */
+  tokens: number
+  /** 同类聚合次数 (可选) */
+  n?: number
+  /** 条目原始正文片段 (保留原文供查看器查看) */
+  content?: string
+}
+
+/**
+ * 上下文分类分块契约 (Context Part)
+ * 7 个固定 part，每个 part 内含 items 列表
+ */
+export interface ContextPart {
+  /** 分类类型 */
+  kind: ContextPartKind
+  /** 该分类总 token 消耗量 (等于 items 之和) */
+  tokens: number
+  /** 分类下细粒度条目列表 */
+  items: ContextItem[]
+}
+
+/**
+ * 上下文完整 Prompt 契约 (Context Prompt)
+ * 对齐 yetone/magpie context.js 模型
+ */
+export interface ContextPrompt {
+  /** 本次请求 prompt 总 Token 量 (used = tokens) */
+  tokens: number
+  /** 上下文窗口最大容量限制 (window) */
+  window: number
+  /** 7 个固定分类分块列表 */
+  parts: ContextPart[]
+}
+
 /** 上下文水位与 Token 消耗分布契约 (Context Watermark) */
 export interface ContextWatermark {
   totalLimit: number
@@ -55,9 +108,22 @@ export interface ContextWatermark {
   ltm: number
   activeTurns: number
   prunableTools: number
+  // 全维真实上下文扩展契约字段 (Real Context Watermark Extensions)
+  total?: number
+  maxCapacity?: number
+  conversationHistory?: number
+  toolOutputs?: number
+  cacheRead?: number
+  reasoningTokens?: number
+  /** 上下文 Prompt 细粒度分布契约 (7 固定 part + items) */
+  prompt?: ContextPrompt
+  /** 数据来源可信度：counted = 来自真实 usage；estimated = 启发式粗估；live = 实时流增量推算 */
+  provenance?: 'counted' | 'estimated' | 'live'
+  /** 窗口来源：known = 来自模型规则表，default = 未知模型兜底值 */
+  windowSource?: 'known' | 'default'
 }
 
-/** 默认上下文水位基准 (82k / 128k, ~64%) */
+/** 默认上下文水位基准 (82k / 128k, ~64%)，属默认兜底值，非真实会话数据 */
 export const DEFAULT_CONTEXT_WATERMARK: ContextWatermark = {
   totalLimit: 128000,
   systemPrompt: 8000,
@@ -66,7 +132,7 @@ export const DEFAULT_CONTEXT_WATERMARK: ContextWatermark = {
   prunableTools: 46000,
 }
 
-/** 基础基准上下文水位 (22k / 128k, ~17%, 绿区安全水位) */
+/** 基础基准上下文水位 (22k / 128k, ~17%, 绿区安全水位)，属默认兜底值，非真实会话数据 */
 export const BASE_CONTEXT_WATERMARK: ContextWatermark = {
   totalLimit: 128000,
   systemPrompt: 12000,
@@ -99,71 +165,6 @@ export interface PrunableItem {
   rawPayloadPreview?: string
   linesCount?: number
 }
-
-/** 默认预设冗余工具调用明细 (46k tokens 待修剪分布) */
-export const DEFAULT_PRUNABLE_ITEMS: PrunableItem[] = [
-  {
-    id: 'item-bash',
-    gesture: 'bash',
-    emoji: '📟',
-    title: 'Bash: pnpm test:pipeline -> 156 passed',
-    rawDetail: '150 lines raw test stdout/stderr, ~28k tokens',
-    tokens: 28000,
-    statusBadge: '已完成历史使命 (Resolved)',
-    foldedSummary: '单元测试回归通过 (156 passed, 0 failed)',
-    linesCount: 150,
-    rawPayloadPreview: [
-      '$ pnpm test:pipeline',
-      '> vitest run pipeline',
-      '',
-      '✓ test/pipeline.test.ts (156 tests passed)',
-      '  ✓ pipeline initialization (12ms)',
-      '  ✓ radash.tryit error capture contract (8ms)',
-      '  ✓ defensive fallback on empty payload (5ms)',
-      '  ... (150 lines raw stdout/stderr hidden)',
-    ].join('\n'),
-  },
-  {
-    id: 'item-edit',
-    gesture: 'edit',
-    emoji: '📝',
-    title: 'Edit: packages/core/pipeline.ts',
-    rawDetail: 'Full AST diff & replaced try/catch (~14k tokens)',
-    tokens: 14000,
-    statusBadge: '已完成历史使命 (Resolved)',
-    foldedSummary: 'packages/core/pipeline.ts 重构应用成功，移除 try-catch 样板并引入 radash.tryit',
-    linesCount: 42,
-    rawPayloadPreview: [
-      '--- a/packages/core/src/pipeline.ts',
-      '+++ b/packages/core/src/pipeline.ts',
-      '@@ -24,8 +24,8 @@',
-      '- try {',
-      '-   const res = await run()',
-      '+ const [err, res] = await tryit(run)()',
-    ].join('\n'),
-  },
-  {
-    id: 'item-read',
-    gesture: 'read',
-    emoji: '🔍',
-    title: 'Read: src/config.ts',
-    rawDetail: 'Raw file contents (~4k tokens)',
-    tokens: 4000,
-    statusBadge: '已完成历史使命 (Resolved)',
-    foldedSummary: '成功读取 package.json，确认依赖缺失',
-    linesCount: 28,
-    rawPayloadPreview: [
-      '{',
-      '  "name": "@netdive/core",',
-      '  "version": "0.1.0",',
-      '  "dependencies": {',
-      '    "pathe": "^0.2.0",',
-      '    "radash": "^12.1.0"',
-      '  }',
-      '}',
-    ].join('\n'),
-  },
-]
 
 /** 决策门禁挂起请求负载 (Gate Prompt Payload) */
 export interface GatePromptPayload {
@@ -198,6 +199,9 @@ export interface TelemetryObservation {
   pointerId?: string
   compactSummary?: string
   command?: string
+  tokens?: number
+  linesCount?: number
+  charsCount?: number
   [key: string]: unknown
 }
 
@@ -323,6 +327,14 @@ export interface TelemetryEvent {
   aggregateCount?: number
   aggregatedEvents?: TelemetryEvent[]
   traceId?: string // 可选向后兼容别名
+  usage?: {
+    input?: number
+    output?: number
+    cacheRead?: number
+    reasoning?: number
+    total?: number
+  }
+  tokenBreakdown?: TurnTokenBreakdown
 }
 
 /** 会话列表项契约 (Master-Detail 视图数据模型) */
@@ -604,6 +616,21 @@ export async function copySessionDiagnosticToClipboard(params: {
 /** 宏观回合生命周期状态 */
 export type MacroTurnStatus = 'success' | 'failed' | 'branching' | 'gate' | 'running'
 
+/** 回合 Token 详细全维分布契约 (Turn Token Breakdown) */
+export interface TurnTokenBreakdown {
+  input?: number
+  output?: number
+  total?: number
+  prunable?: number
+  cacheRead?: number
+  reasoningTokens?: number
+  systemPrompt?: number
+  toolOutputs?: number
+  conversationHistory?: number
+  /** 数据来源可信度：counted = 来自真实 usage；estimated = 启发式粗估；live = 实时流增量推算 */
+  provenance?: 'counted' | 'estimated' | 'live'
+}
+
 /** 宏观复合回合数据契约 (Macro Turn Compound Group Contract) */
 export interface MacroTurnGroup {
   turnId: string
@@ -613,12 +640,7 @@ export interface MacroTurnGroup {
   status: MacroTurnStatus
   totalDuration?: string
   durationMs?: number
-  tokenBreakdown?: {
-    input?: number
-    output?: number
-    total?: number
-    prunable?: number
-  }
+  tokenBreakdown?: TurnTokenBreakdown
   toolCounts: Record<string, number>
   subEvents: TelemetryEvent[]
   actor?: TelemetryActor
@@ -626,6 +648,9 @@ export interface MacroTurnGroup {
   hasFailure?: boolean
   hasGate?: boolean
 }
+
+/** 复合回合节点数据契约类型别名 (Turn Compound Node Contract) */
+export type TurnCompoundNode = MacroTurnGroup
 
 
 

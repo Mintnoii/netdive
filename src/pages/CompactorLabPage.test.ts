@@ -1,16 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  CompactorLabPage,
-} from './CompactorLabPage'
-import {
-  SCENARIO_150_LINE_TEST_LOG,
-  SCENARIO_AST_DIFF,
-  SCENARIO_HEAVY_PACKAGE_JSON,
-  PRESET_SCENARIOS,
-  estimateTokens,
-  type ScenarioPresetKey,
-} from '../services/compactorLabScenarios'
+import { CompactorLabPage } from './CompactorLabPage'
+import * as scenariosModule from '../services/compactorLabScenarios'
+import { estimateTokens, SANDBOX_PLACEHOLDER } from '../services/compactorLabScenarios'
 import {
   MicroCompactor,
   compactToolLines,
@@ -20,7 +12,7 @@ import {
   DEFAULT_TAIL_LINES,
 } from '../services/microCompactor'
 
-describe('CompactorLabPage & Scenarios Unit Tests', () => {
+describe('CompactorLabPage & Sandbox Unit Tests', () => {
   it('exports CompactorLabPage as a valid React component function', () => {
     assert.equal(typeof CompactorLabPage, 'function')
     assert.equal(CompactorLabPage.name, 'CompactorLabPage')
@@ -39,127 +31,109 @@ describe('CompactorLabPage & Scenarios Unit Tests', () => {
     })
   })
 
-  describe('Preset Scenarios Contract & Compaction Calculations', () => {
-    it('contains all 3 required scenario presets in PRESET_SCENARIOS', () => {
-      const expectedKeys: Exclude<ScenarioPresetKey, '自定义输入 (Custom Input)'>[] = [
-        '150 行超长单测日志 Dump (pnpm test)',
-        '超大 AST 差异 Diff 补丁 (packages/core/pipeline.ts)',
-        '巨型依赖清单读取 (package.json / tsconfig)',
-      ]
-
-      for (const key of expectedKeys) {
-        assert.ok(key in PRESET_SCENARIOS, `Missing required preset key: ${key}`)
-        assert.ok(typeof PRESET_SCENARIOS[key] === 'string' && PRESET_SCENARIOS[key].length > 0)
-      }
+  describe('compactorLabScenarios Module Sandbox Contract', () => {
+    it('exports SANDBOX_PLACEHOLDER with at most 10 lines', () => {
+      assert.equal(typeof SANDBOX_PLACEHOLDER, 'string')
+      const lines = SANDBOX_PLACEHOLDER.split('\n')
+      assert.ok(lines.length <= 10, `Expected <= 10 lines, got ${lines.length}`)
+      assert.ok(lines.length > 0)
     })
 
-    describe("Scenario 1: '150 行超长单测日志 Dump (pnpm test)'", () => {
-      it('has exactly 150 lines and triggers micro-compaction', () => {
-        const lines = SCENARIO_150_LINE_TEST_LOG.split('\n')
-        assert.equal(lines.length, 150)
-        assert.ok(isCompactionNeeded(SCENARIO_150_LINE_TEST_LOG))
-      })
-
-      it('compacts 150 lines into 31 lines (Head 15 + fold marker + Tail 15) and reclaims > 70% tokens', () => {
-        const compactor = new MicroCompactor({
-          maxLinesThreshold: DEFAULT_MAX_LINES_THRESHOLD,
-          headLinesCount: DEFAULT_HEAD_LINES,
-          tailLinesCount: DEFAULT_TAIL_LINES,
-        })
-
-        const res = compactor.compactToolOutput(SCENARIO_150_LINE_TEST_LOG, {
-          toolName: '150 行超长单测日志 Dump (pnpm test)',
-          exitCode: 0,
-        })
-
-        assert.equal(res.compacted, true)
-        assert.ok(res.pointerId)
-        assert.equal(res.exitCode, 0)
-        assert.equal(res.originalLines, 150)
-        assert.equal(res.compactedLines, 31) // 15 + 1 + 15
-
-        const outputLines = res.output.split('\n')
-        assert.equal(outputLines.length, 31)
-
-        // 验证头部 15 行
-        const rawLines = SCENARIO_150_LINE_TEST_LOG.split('\n')
-        for (let i = 0; i < 15; i++) {
-          assert.equal(outputLines[i], rawLines[i])
-        }
-
-        // 验证折叠标记
-        assert.ok(outputLines[15].includes('原始输出已折叠 120 行'))
-
-        // 验证尾部 15 行
-        for (let i = 0; i < 15; i++) {
-          assert.equal(outputLines[16 + i], rawLines[150 - 15 + i])
-        }
-
-        // 验证节约字符数与节约率
-        assert.ok(res.reclaimedChars > 0)
-        const rawTokens = estimateTokens(SCENARIO_150_LINE_TEST_LOG)
-        const compactedTokens = estimateTokens(res.output)
-        const reclaimRatio = ((rawTokens - compactedTokens) / rawTokens) * 100
-        assert.ok(reclaimRatio > 70, `Expected reclaim ratio > 70%, got ${reclaimRatio}%`)
-
-        // 验证 WAL 原地回放 100% 原始文本
-        const replayed = compactor.replay(res.pointerId)
-        assert.equal(replayed, SCENARIO_150_LINE_TEST_LOG)
-      })
-    })
-
-    describe("Scenario 2: '超大 AST 差异 Diff 补丁 (packages/core/pipeline.ts)'", () => {
-      it('is a realistic unified diff with > 40 lines that compacts cleanly', () => {
-        const rawText = SCENARIO_AST_DIFF
-        const lines = rawText.split('\n')
-        assert.ok(lines.length > DEFAULT_MAX_LINES_THRESHOLD)
-        assert.ok(rawText.startsWith('diff --git'))
-
-        const compaction = compactToolLines(rawText)
-        assert.equal(compaction.compacted, true)
-        assert.equal(compaction.compactedLines, 31)
-        assert.ok(compaction.compactedText.includes('原始输出已折叠'))
-      })
-    })
-
-    describe("Scenario 3: '巨型依赖清单读取 (package.json / tsconfig)'", () => {
-      it('is a valid JSON payload with > 40 lines that compacts cleanly', () => {
-        const rawText = SCENARIO_HEAVY_PACKAGE_JSON
-        const parsed = JSON.parse(rawText)
-        assert.equal(typeof parsed, 'object')
-        assert.ok(parsed.dependencies)
-
-        const lines = rawText.split('\n')
-        assert.ok(lines.length > DEFAULT_MAX_LINES_THRESHOLD)
-
-        const compaction = compactToolLines(rawText)
-        assert.equal(compaction.compacted, true)
-        assert.equal(compaction.compactedLines, 31)
-      })
+    it('does not export deprecated fake preset scenario constants', () => {
+      const exportedKeys = Object.keys(scenariosModule)
+      const deprecatedKey = ['PRESET', 'SCENARIOS'].join('_')
+      assert.equal(
+        exportedKeys.includes(deprecatedKey),
+        false,
+        `Module should not export ${deprecatedKey}`
+      )
     })
   })
 
-  describe('WAL Pointer Registration and Replay Fidelity', () => {
-    it('creates distinct pointer IDs and lossless WAL retrieval for each scenario', () => {
-      const compactor = new MicroCompactor({ pointerPrefix: 'wal-test-' })
+  describe('compactToolLines & MicroCompactor Boundary Contracts', () => {
+    it('does not compact short outputs (<= 40 lines and <= 1500 chars)', () => {
+      const shortLog = Array.from({ length: 30 }, (_, i) => `log line ${i + 1}`).join('\n')
+      assert.equal(isCompactionNeeded(shortLog), false)
+      const res = compactToolLines(shortLog)
+      assert.equal(res.compacted, false)
+      assert.equal(res.compactedLines, 30)
+      assert.equal(res.compactedText, shortLog)
+    })
 
-      const res1 = compactor.compactToolOutput(SCENARIO_150_LINE_TEST_LOG)
-      const res2 = compactor.compactToolOutput(SCENARIO_AST_DIFF)
+    it('compacts when line count > 40, retaining Head 15 + fold marker + Tail 15', () => {
+      const linesCount = 80
+      const longLog = Array.from({ length: linesCount }, (_, i) => `item index ${i + 1}`).join('\n')
+      assert.ok(isCompactionNeeded(longLog))
 
-      assert.ok(res1.pointerId)
-      assert.ok(res2.pointerId)
-      assert.notEqual(res1.pointerId, res2.pointerId)
+      const res = compactToolLines(longLog, {
+        maxLinesThreshold: DEFAULT_MAX_LINES_THRESHOLD,
+        headLinesCount: DEFAULT_HEAD_LINES,
+        tailLinesCount: DEFAULT_TAIL_LINES,
+      })
 
-      assert.equal(compactor.replay(res1.pointerId!), SCENARIO_150_LINE_TEST_LOG)
-      assert.equal(compactor.replay(res2.pointerId!), SCENARIO_AST_DIFF)
+      assert.equal(res.compacted, true)
+      assert.equal(res.originalLines, linesCount)
+      assert.equal(res.compactedLines, 31) // 15 + 1 + 15
+      assert.ok(res.compactedText.includes('原始输出已折叠'))
+      assert.ok(res.compactedText.includes('50 行')) // 80 - 30 = 50 lines folded
+
+      const outputLines = res.compactedText.split('\n')
+      const rawLines = longLog.split('\n')
+
+      // 验证头部 15 行
+      for (let i = 0; i < 15; i++) {
+        assert.equal(outputLines[i], rawLines[i])
+      }
+      // 验证折叠标记位于第 16 行 (索引 15)
+      assert.ok(outputLines[15].includes('原始输出已折叠'))
+      // 验证尾部 15 行
+      for (let i = 0; i < 15; i++) {
+        assert.equal(outputLines[16 + i], rawLines[linesCount - 15 + i])
+      }
+    })
+
+    it('compacts when char count > 1500 even if line count <= 40', () => {
+      const longLine = 'A'.repeat(2000)
+      assert.ok(isCompactionNeeded(longLine))
+      const res = compactToolLines(longLine)
+      assert.equal(res.compacted, true)
+      assert.ok(res.compactedText.includes('原始输出已折叠'))
+    })
+  })
+
+  describe('WAL Pointer Registration & Replay Fidelity (wal-lab-* prefix)', () => {
+    it('creates wal-lab-* pointer IDs and achieves 100% lossless raw retrieval', () => {
+      const compactor = new MicroCompactor({ pointerPrefix: 'wal-lab-' })
+      const sampleText = Array.from({ length: 60 }, (_, i) => `sample line ${i + 1}`).join('\n')
+
+      const result = compactor.compactToolOutput(sampleText, {
+        toolName: 'sandbox-test',
+        exitCode: 0,
+      })
+
+      assert.equal(result.compacted, true)
+      assert.ok(result.pointerId)
+      assert.ok(
+        result.pointerId.startsWith('wal-lab-'),
+        `Expected pointerId to start with wal-lab-, got ${result.pointerId}`
+      )
+
+      const replayed = compactor.replay(result.pointerId)
+      assert.equal(replayed, sampleText)
+
+      const walEntries = compactor.getAllWal()
+      assert.equal(walEntries.length, 1)
+      assert.equal(walEntries[0].pointerId, result.pointerId)
+      assert.equal(walEntries[0].originalLines, 60)
+      assert.equal(walEntries[0].compactedLines, 31)
 
       const stats = compactor.getWalStats()
-      assert.equal(stats.totalEntries, 2)
+      assert.equal(stats.totalEntries, 1)
       assert.ok(stats.totalReclaimedChars > 0)
     })
   })
 
-  describe('Prompt Cache Prefix Stability Calculations', () => {
+  describe('Prompt Cache Prefix Stability Verification', () => {
     it('creates byte-level invariant canonical representation and hashes', () => {
       const compactor = new MicroCompactor()
       const systemPrompt = 'System Prompt Test'

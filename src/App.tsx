@@ -19,10 +19,10 @@ import {
   X,
 } from 'lucide-react'
 import { AgentNode, type AgentNodeData } from './components/AgentNode'
-import { TurnNode } from './components/TurnNode'
+import { TurnNode, type TurnNodeData } from './components/TurnNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
 import { ContextStripBar } from './components/ContextStripBar'
-import { PrunableInspectorDrawer } from './components/PrunableInspectorDrawer'
+import { ContextInspectorDrawer } from './components/ContextInspectorDrawer'
 import { NodeDetailsDrawer } from './components/NodeDetailsDrawer'
 import { TurnDetailsDrawer } from './components/TurnDetailsDrawer'
 import { StateTimelineScrubber } from './components/StateTimelineScrubber'
@@ -197,6 +197,7 @@ function CanvasViewportController({
 function MainFlowCanvas() {
   const {
     nodes,
+    edges,
     onNodesChange,
     onEdgesChange,
     isPlaying,
@@ -208,9 +209,6 @@ function MainFlowCanvas() {
     bridge,
     watermark,
     setWatermark,
-    isPruned,
-    reclaimedTokens,
-    pruneContext,
     prunableItems,
     sessionsList,
     activeSessionId,
@@ -250,7 +248,7 @@ function MainFlowCanvas() {
         if (text && text.trim()) {
           const parsed = parseTranscript(text)
           setRawEvents(parsed.events)
-          setWatermark(BASE_CONTEXT_WATERMARK)
+          setWatermark(parsed.watermark || BASE_CONTEXT_WATERMARK)
         }
       })
     }
@@ -340,7 +338,7 @@ function MainFlowCanvas() {
     }
   }, [derivedNodes, derivedEdges, setNodes, setEdges])
 
-  const totalNodesCount = derivedNodes.length
+  const totalNodesCount = nodes.length
 
   // 当前时间轴截断渲染的节点与边（根据 timelineStep 进行时光切片回放）
   const { visibleNodes, visibleEdges } = useMemo(() => {
@@ -349,13 +347,13 @@ function MainFlowCanvas() {
     }
     // 0 或 >= totalNodesCount 表示呈现全量最新态
     const step = timelineStep > 0 ? Math.min(timelineStep, totalNodesCount) : totalNodesCount
-    const sliced = derivedNodes.slice(0, step)
+    const sliced = nodes.slice(0, step)
     const slicedIds = new Set(sliced.map((n) => n.id))
-    const slicedEdges = derivedEdges.filter(
+    const slicedEdges = edges.filter(
       (e) => slicedIds.has(e.source) && slicedIds.has(e.target)
     )
     return { visibleNodes: sliced, visibleEdges: slicedEdges }
-  }, [derivedNodes, derivedEdges, timelineStep, totalNodesCount])
+  }, [nodes, edges, timelineStep, totalNodesCount])
 
   // 判断当前选中的会话是否处于活跃运行/待审批状态
   const isCurrentSessionActive = activeSessionMeta?.status === 'running' || activeSessionMeta?.status === 'gate'
@@ -496,7 +494,7 @@ function MainFlowCanvas() {
               if (text && text.trim()) {
                 const parsed = parseTranscript(text)
                 setRawEvents(parsed.events)
-                setWatermark(BASE_CONTEXT_WATERMARK)
+                setWatermark(parsed.watermark || BASE_CONTEXT_WATERMARK)
               }
             }}
             onImportJsonl={(content) => {
@@ -508,7 +506,7 @@ function MainFlowCanvas() {
               const parsed = parseTranscript(content)
               setActiveSessionId(parsed.session.sessionId || parsed.session.id || `session-${Date.now()}`)
               setRawEvents(parsed.events)
-              setWatermark(BASE_CONTEXT_WATERMARK)
+              setWatermark(parsed.watermark || BASE_CONTEXT_WATERMARK)
             }}
             isCollapsed={isSidebarCollapsed}
             onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
@@ -707,24 +705,120 @@ function MainFlowCanvas() {
                   <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
                   <MiniMap
                     className="!bg-[#FAF8F5] !border-[#E5E0D8] !rounded-xl !shadow-xs hidden md:block"
-                    maskColor="rgba(245, 240, 230, 0.6)"
+                    maskColor="rgba(245, 240, 230, 0.45)"
+                    maskStrokeColor="#D5CDBD"
+                    maskStrokeWidth={1}
+                    nodeStrokeWidth={1.5}
+                    nodeStrokeColor={(n) => {
+                      const isTurn = n.type === 'turnNode' || n.id.startsWith('turn-') || Boolean((n.data as Record<string, unknown>)?.turnId)
+                      if (isTurn) {
+                        const turnData = n.data as unknown as TurnNodeData | undefined
+                        const toolEntries = Object.entries(turnData?.toolCounts || {})
+                        const subEventsCount = turnData?.subEvents?.length || 0
+                        const isInputOnly =
+                          toolEntries.length === 0 &&
+                          (subEventsCount <= 1 ||
+                            (turnData?.subEvents &&
+                              turnData.subEvents.every(
+                                (e) => e.actor === 'Human Operator' || /用户|User/i.test(e.title || '')
+                              )))
+
+                        // 用户取消回合：小地图使用更低饱和更弱化的中冷灰 (#78716C stone-500) 描边
+                        if (isInputOnly) return '#78716C'
+
+                        const status = (turnData?.status || (n as unknown as { status?: string }).status)
+                        switch (status) {
+                          case 'failed':
+                            return '#F43F5E'
+                          case 'gate':
+                            return '#F59E0B'
+                          case 'branching':
+                            return '#D97706'
+                          case 'running':
+                            return '#6366F1'
+                          case 'success':
+                          default:
+                            return '#10B981'
+                        }
+                      }
+                      const nodeData = n.data as unknown as AgentNodeData
+                      if (nodeData?.status === 'failed' || nodeData?.status === 'rejected') return '#EF4444'
+                      if (nodeData?.status === 'gate') return '#F59E0B'
+                      if (nodeData?.isCorrectionBranch) return '#D97706'
+                      if (nodeData?.isAggregated) return '#B5AFA4'
+                      if (nodeData?.status === 'running') return '#6366F1'
+                      return '#10B981'
+                    }}
                     nodeColor={(n) => {
-                      if (n.type === 'turnNode') return '#1E2024'
-                      const gesture = (n.data as unknown as AgentNodeData)?.gesture
-                      switch (gesture) {
+                      const isTurn = n.type === 'turnNode' || n.id.startsWith('turn-') || Boolean((n.data as Record<string, unknown>)?.turnId)
+                      // 1. 宏观回合节点 (TurnNode)：根据回合执行状态精准映射，告别大黑块
+                      if (isTurn) {
+                        const turnData = n.data as unknown as TurnNodeData | undefined
+                        const toolEntries = Object.entries(turnData?.toolCounts || {})
+                        const subEventsCount = turnData?.subEvents?.length || 0
+                        const isInputOnly =
+                          toolEntries.length === 0 &&
+                          (subEventsCount <= 1 ||
+                            (turnData?.subEvents &&
+                              turnData.subEvents.every(
+                                (e) => e.actor === 'Human Operator' || /用户|User/i.test(e.title || '')
+                              )))
+
+                        // 用户取消回合：小地图使用更灰更沉静的底色 (#D6D3D1 stone-300)
+                        if (isInputOnly) return '#D6D3D1'
+
+                        const status = (turnData?.status || (n as unknown as { status?: string }).status)
+                        switch (status) {
+                          case 'failed':
+                            return '#FFE4E6' // rose-100 (单测异常/失败)
+                          case 'gate':
+                            return '#FEF3C7' // amber-100 (门禁待审)
+                          case 'branching':
+                            return '#FEF9C3' // yellow-100 (自愈闭环分支)
+                          case 'running':
+                            return '#E0E7FF' // indigo-100 (运行中)
+                          case 'success':
+                          default:
+                            return '#D1FAE5' // emerald-100 (完成)
+                        }
+                      }
+
+                      // 2. 微观执行节点 (AgentNode)：优先根据状态（失败/门禁/聚合/自愈/完成）映射画布真实色彩
+                      const nodeData = n.data as unknown as AgentNodeData
+                      if (nodeData?.status === 'failed' || nodeData?.status === 'rejected') {
+                        return '#FEE2E2' // red-100 (执行失败/拦截)
+                      }
+                      if (nodeData?.status === 'gate') {
+                        return '#FEF3C7' // amber-100 (待审)
+                      }
+                      if (nodeData?.isCorrectionBranch) {
+                        return '#FEF9C3' // amber-50 / yellow-100 (自愈分支)
+                      }
+                      if (nodeData?.isAggregated) {
+                        return '#EAE4D9' // 聚合卡片特有的素雅叠纸暖灰 (#EAE4D9)
+                      }
+                      if (nodeData?.status === 'running') {
+                        return '#E0E7FF' // indigo-100 (运行中)
+                      }
+                      if (nodeData?.pruned) {
+                        return '#F5F5F4' // stone-100 (已修剪)
+                      }
+
+                      // 3. 正常完成状态下，根据六大手势语义映射对应手势色阶底色
+                      switch (nodeData?.gesture) {
                         case 'read':
-                          return '#0284C7'
+                          return '#E0F2FE' // sky-100 (代码检视)
                         case 'bash':
-                          return '#059669'
+                          return '#D1FAE5' // emerald-100 (终端执行)
                         case 'edit':
-                          return '#2563EB'
+                          return '#DBEAFE' // blue-100 (文件修改)
                         case 'memory':
-                          return '#9333EA'
+                          return '#F3E8FF' // purple-100 (记忆存取)
                         case 'gate':
-                          return '#D97706'
+                          return '#FEF3C7' // amber-100 (门禁)
                         case 'think':
                         default:
-                          return '#D97706'
+                          return '#EEF2FF' // indigo-50 (推理思考)
                       }
                     }}
                     zoomable
@@ -765,8 +859,8 @@ function MainFlowCanvas() {
                       <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#1E2024] text-white tracking-wider shrink-0">
                         Turn #{activeTurn.turnIndex}
                       </span>
-                      <span className="font-semibold text-[#1E2024] max-w-[200px] truncate" title={activeTurn.title}>
-                        {activeTurn.title}
+                      <span className="font-semibold text-[#1E2024] max-w-[240px] truncate" title={activeTurn.intent || activeTurn.title}>
+                        {activeTurn.intent || activeTurn.title}
                       </span>
                       <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#FAF8F5] text-[#5C5549] border border-[#E5E0D8]">
                         {derivedNodes.length} 步因果拓扑
@@ -874,19 +968,6 @@ function MainFlowCanvas() {
                   onClose={() => setSelectedTurnForDrawer(null)}
                 />
               )}
-
-              {/* 侧边栏上下文剪枝抽屉 */}
-              {isInspectorOpen && (
-                <PrunableInspectorDrawer
-                  isOpen={isInspectorOpen}
-                  onClose={() => setIsInspectorOpen(false)}
-                  isPruned={isPruned}
-                  reclaimedTokens={reclaimedTokens}
-                  onPrune={pruneContext}
-                  items={prunableItems}
-                  watermark={watermark}
-                />
-              )}
             </main>
 
             {/* 统一因果时间轴 (仅在非活跃运行态展示；活跃运行态自动隐藏，防止与实时流冲突) */}
@@ -943,9 +1024,6 @@ function MainFlowCanvas() {
             {/* 底部 Token 水位与剪枝分布条 (Context Token Strip & Pruning) */}
             <ContextStripBar
               watermark={watermark}
-              isPruned={isPruned}
-              reclaimedTokens={reclaimedTokens}
-              onPrune={pruneContext}
               prunableItems={prunableItems}
               isInspectorOpen={isInspectorOpen}
               onInspect={() => setIsInspectorOpen((open) => !open)}
@@ -962,6 +1040,18 @@ function MainFlowCanvas() {
         <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
           <CompactorLabPage />
         </div>
+      )}
+
+      {/* 底部上下文水位明细抽屉 (Context Inspector Bottom Sheet：固定视口底部悬浮 Sheet) */}
+      {isInspectorOpen && (
+        <ContextInspectorDrawer
+          isOpen={isInspectorOpen}
+          onClose={() => setIsInspectorOpen(false)}
+          watermark={watermark}
+          events={rawEvents}
+          sessionTitle={activeSessionMeta?.title}
+          sessionId={activeSessionId}
+        />
       )}
     </div>
   )

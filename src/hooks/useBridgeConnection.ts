@@ -44,8 +44,12 @@ export interface UseBridgeConnectionReturn {
   reconnect: () => void
 }
 
-const DEFAULT_WS_URL = 'ws://127.0.0.1:4560/ws'
-const DEFAULT_HTTP_URL = 'http://127.0.0.1:4560'
+/** 桥接服务 WebSocket 地址（默认本地 Sidecar） */
+export const DEFAULT_BRIDGE_WS_URL = 'ws://127.0.0.1:4560/ws'
+/** 桥接服务 HTTP 基址（默认本地 Sidecar），供 /api/* 端点复用 */
+export const DEFAULT_BRIDGE_HTTP_URL = 'http://127.0.0.1:4560'
+const DEFAULT_WS_URL = DEFAULT_BRIDGE_WS_URL
+const DEFAULT_HTTP_URL = DEFAULT_BRIDGE_HTTP_URL
 const DEFAULT_RECONNECT_INTERVAL_MS = 3000
 
 /**
