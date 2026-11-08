@@ -312,7 +312,11 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
                     {formatTokens(maxCapacity)}
                   </span>
                   <span className="text-[10px] leading-none text-[#A8A29E] truncate">
-                    {watermark.windowSource === 'default' ? '未知模型 · 按 200k 兜底' : '模型规则表判定'}
+                    {watermark.windowClamped
+                      ? '用量已超规则窗口 · 按实际用量撑开'
+                      : watermark.windowSource === 'default'
+                      ? '未知模型 · 按 200k 兜底'
+                      : '模型规则表判定'}
                   </span>
                 </div>
 

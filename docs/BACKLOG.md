@@ -147,7 +147,7 @@ NetDive 的定位是**旁路观测与拦截控制台**（见 `docs/POSITIONING.m
 | `src/services/sampleTranscript.ts` | 会话时光机内置样例 | 保留；页面为演示用途 |
 | `types/telemetry.ts` `DEFAULT_CONTEXT_WATERMARK` / `BASE_CONTEXT_WATERMARK` | 默认兜底水位 | 保留；JSDoc 已注明非真实数据 |
 | `transcriptParser.ts` `systemTokens ? : 12000`、`Math.max(2000, events*300)` | 启发式兜底 | 保留；现已带 `estimated` 标记 |
-| `transcriptParser.ts` `totalLimit/maxCapacity` | 已改为按模型解析 | ✅ 2026-11-08 落地：`modelWindows.ts` 本地保守规则表 + 未知模型 `windowSource='default'` 显式兜底 |
+| `transcriptParser.ts` `totalLimit/maxCapacity` | 已改为按模型解析 + 撑开不变量 | ✅ 2026-11-08 落地：`modelWindows.ts` 本地保守规则表 + 未知模型 `windowSource='default'` 显式兜底；`effectiveContextWindow` 保证 `window >= total`（Magpie `scale = max(window, tokens, 1)`），`windowClamped` 在 UI 明示「用量已超规则窗口 · 按实际用量撑开」 |
 
 ### 5.4 模型窗口规则表现状
 

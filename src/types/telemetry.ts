@@ -121,6 +121,8 @@ export interface ContextWatermark {
   provenance?: 'counted' | 'estimated' | 'live'
   /** 窗口来源：known = 来自模型规则表，default = 未知模型兜底值 */
   windowSource?: 'known' | 'default'
+  /** 窗口兜底值小于实际用量时按用量撑开，非模型真实物理窗口 */
+  windowClamped?: boolean
 }
 
 /** 默认上下文水位基准 (82k / 128k, ~64%)，属默认兜底值，非真实会话数据 */

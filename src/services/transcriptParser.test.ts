@@ -1848,6 +1848,64 @@ describe('NetDive Transcript Parser Engine', () => {
         assert(typeof wm.activeTurns === 'number')
       })
     })
+
+    describe('effectiveContextWindow Scale Invariant (window clamp)', () => {
+      it('clamps window when usage exceeds default fallback window for unknown model', () => {
+        const jsonl = [
+          JSON.stringify({ type: 'session', id: 'sess-clamp-1', cwd: '/repo' }),
+          JSON.stringify({ type: 'model_change', modelId: 'unknown-custom-model' }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-1',
+            message: { role: 'user', content: 'test request' },
+          }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-2',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'response' }],
+              usage: { input: 369800, output: 0 },
+            },
+          }),
+        ].join('\n')
+
+        const parsed = parseTranscript(jsonl)
+        const wm = parsed.watermark
+        assert(wm, 'watermark must exist')
+        assert.equal(wm.maxCapacity, wm.total)
+        assert.equal(wm.windowClamped, true)
+        assert.equal(wm.prompt?.window, wm.maxCapacity)
+        assert.equal(wm.totalLimit, wm.maxCapacity)
+      })
+
+      it('does not clamp window when usage is within known gemini window', () => {
+        const jsonl = [
+          JSON.stringify({ type: 'session', id: 'sess-clamp-2', cwd: '/repo' }),
+          JSON.stringify({ type: 'model_change', modelId: 'gemini-3.8-flash' }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-1',
+            message: { role: 'user', content: 'test request' },
+          }),
+          JSON.stringify({
+            type: 'message',
+            id: 'msg-2',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'response' }],
+              usage: { input: 42000, output: 0 },
+            },
+          }),
+        ].join('\n')
+
+        const parsed = parseTranscript(jsonl)
+        const wm = parsed.watermark
+        assert(wm, 'watermark must exist')
+        assert.equal(wm.maxCapacity, 1048576)
+        assert.notEqual(wm.windowClamped, true)
+      })
+    })
   })
 })
 

@@ -88,3 +88,29 @@ export function resolveContextWindow(modelId?: string | null): ContextWindowReso
     source: 'default',
   }
 }
+
+/**
+ * 依据实际已用 Token 动态计算生效的上下文窗口尺度（Magpie scale = max(window, tokens, 1) 不变量）
+ * 当实际已用用量超过解析出的规则/兜底窗口时，将窗口尺度撑开至 usedTokens，保证百分比不超过 100%、剩余量不为 0。
+ * 注意：撑开后的 window 仅为 UI 绘图尺度，并不是模型的真实物理窗口，因此严格保留 source 与 matchedRule 原值。
+ *
+ * @param resolved 模型规则解析出的原始上下文窗口信息
+ * @param usedTokens 会话中实际消耗的总 Token 数量
+ */
+export function effectiveContextWindow(
+  resolved: ContextWindowResolution,
+  usedTokens: number
+): ContextWindowResolution & { clamped: boolean } {
+  if (usedTokens > resolved.window) {
+    return {
+      ...resolved,
+      window: usedTokens,
+      clamped: true,
+    }
+  }
+  return {
+    ...resolved,
+    clamped: false,
+  }
+}
+

@@ -133,14 +133,21 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
               {formatTokens(totalUsed)} / {formatTokens(totalLimit)}
             </span>
             <span className="text-[#8F887D]">({usagePercent}%)</span>
-            {watermark.windowSource === 'default' && (
+            {watermark.windowClamped ? (
+              <span
+                className="text-[10px] text-[#8F887D]"
+                title="用量已超规则窗口，按实际用量撑开计算占用百分比"
+              >
+                用量已超规则窗口 · 按实际撑开
+              </span>
+            ) : watermark.windowSource === 'default' ? (
               <span
                 className="text-[10px] text-[#8F887D]"
                 title="该模型不在本地窗口规则表内，按 200k 兜底计算占用百分比"
               >
                 窗口未知·按 200k 兜底
               </span>
-            )}
+            ) : null}
           </div>
 
           {/* 运行态安全 / 告警状态指示胶囊 */}

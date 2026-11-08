@@ -36,7 +36,7 @@ import { normalizeObservationOutput } from '../types/telemetry'
 import type { AgentNodeData } from '../components/AgentNode'
 import { extractRealIntent } from './agentNodeLOD'
 export { extractRealIntent } from './agentNodeLOD'
-import { resolveContextWindow } from './modelWindows'
+import { resolveContextWindow, effectiveContextWindow } from './modelWindows'
 
 /** 解析后的会话元数据契约 */
 export interface SessionMetadata {
@@ -1154,11 +1154,13 @@ export function parseTranscript(jsonlText: string): ParsedTranscript {
   }
 
   const resolvedWindow = resolveContextWindow(ctx.session.modelId)
+  const effective = effectiveContextWindow(resolvedWindow, totalTokens)
 
   const watermark: ContextWatermark = {
-    totalLimit: resolvedWindow.window,
-    maxCapacity: resolvedWindow.window,
+    totalLimit: effective.window,
+    maxCapacity: effective.window,
     windowSource: resolvedWindow.source,
+    windowClamped: effective.clamped,
     systemPrompt: systemPromptTokens,
     ltm: 0,
     activeTurns: activeTurnsTokens,
@@ -1311,7 +1313,7 @@ export function parseTranscript(jsonlText: string): ParsedTranscript {
   // 8. 组装 ContextPrompt 并挂载至 ContextWatermark
   const prompt: ContextPrompt = {
     tokens: watermarkTotal,
-    window: watermark.maxCapacity ?? watermark.totalLimit ?? resolvedWindow.window,
+    window: watermark.maxCapacity ?? watermark.totalLimit,
     parts,
   }
   watermark.prompt = prompt
