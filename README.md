@@ -2,16 +2,18 @@
 
 > 面向自主智能体 (Autonomous AI Agents) 与复杂流水线 (Pipelines) 的实时因果拓扑、控制论断言与双向人机门禁 (Human-in-the-Loop) 控制台。
 
+当前版本 `v0.2.0` · [变更日志](./CHANGELOG.md) · [未落地特性台账](./docs/BACKLOG.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript 5.x](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![TypeScript 7.x](https://img.shields.io/badge/TypeScript-7.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![React 19](https://img.shields.io/badge/React-19.x-61dafb?logo=react)](https://react.dev/)
 [![Hono 4.x](https://img.shields.io/badge/Hono-4.x-E36002?logo=hono)](https://hono.dev/)
-[![Build & Tests](https://img.shields.io/badge/Tests-86%20Passed%20(100%25)-brightgreen)]()
+[![Build & Tests](https://img.shields.io/badge/Tests-233%20Passed%20(100%25)-brightgreen)]()
 
 ---
 
 ![NetDive 控制台界面全景](./public/netdive-preview.png)
-*图 1：NetDive 单向因果主干拓扑、ReAct 错误自愈分叉与上下文剪枝审查抽屉联动全景*
+*图 1：单向因果主干拓扑、ReAct 错误自愈分叉与底部上下文水位条*
 
 ![NetDive 会话时光机界面](./public/session-replay-autopan-preview.png)
 *图 2：NetDive 会话时光机 (Session Replay)：解析本地真实 JSONL 会话流、智能连续调用聚合折叠 (Folding) 与时间轴无感回放*
@@ -78,10 +80,21 @@ NetDive 采用多页面实验室（Studio Matrix）架构，将不同层级的�
 - **异常强隔离守卫**：序列中只要出现失败调用，算法自动切断折叠并单独突显自愈节点，杜绝掩盖故障；
 - **时钟比率锁定与平滑运镜**：切换折叠或回放倍速时，进度滑块物理百分比纹丝不动；回放时镜头平滑跟随最新执行卡片，用户手动审查时自动暂停追焦。
 
-### 4. 上下文热力学与确定性微压缩 (Micro-Compactor)
-- **本地零 Token 开销**：对超过 40 行或 1500 字符的冗长输出，采用确定性 Head 15 + Tail 15 保留截断，平均降低 80% 的单步上下文开销；
-- **协议配对校验**：严格校验 `tool_call_id` 与工具返回的闭合对应关系，防止孤儿节点引发 HTTP 400 崩溃；
-- **Prompt Cache 前缀保真**：在压缩执行历史的同时，严格保证 System Prompt 与长程记忆在字节级不变，充分复用模型供应商的 KV Cache 优惠。
+### 4. 确定性微压缩与 WAL 离线指针 (Micro-Compactor)
+- **折叠规则**：工具输出超过 40 行或 1500 字符时，保留 Head 15 行、折叠标记行与 Tail 15 行，纯函数计算，零模型调用；
+- **原文可回放**：被折叠的原文存入内存 WAL 注册表（`wal-call-N`），通过 `GET /api/wal/:pointerId/replay` 逐条取回；
+- **协议配对校验**：严格校验 `tool_call_id` 与工具返回的闭合对应关系，防止孤儿节点引发 HTTP 400；
+- **前缀保真**：`computePrefixHash` 锁定 System Prompt 与 LTM 边界，保证折叠只动尾部，前缀序列化字节级不变。
+
+这套引擎在 bridge 摄入遥测时自动生效，压缩的是**进入画布与检查器的观测副本**。Agent 自身上下文的压缩需要在宿主 tool_result 回填钩子里介入，已列为暂缓项，见 `docs/BACKLOG.md`。
+
+### 5. 上下文窗口观测 (Context Inspector)
+- **七类档位**：按 `system / tools / skills / memory / files / results / chat` 采集真实 prompt 构成，每类下带条目原文与聚合次数，非 free 分块的 Token 之和严格对齐真实 `usage`；
+- **Treemap 构成图**：`d3-hierarchy` 的 squarified 布局，系统提示词与工具定义固定在最左侧；面积下限重排保证小分类依然可见，剩余空间为斜纹块；
+- **原文查看器**：点瓦片或清单行打开独立文本浮层，逐条折叠、原文与压缩预览双视图、复制、分页；
+- **压缩机会剖析**：`analyzeCompactionOpportunities` 纯函数判定哪些观测超阈值，预演浮层给出 Head / 折叠标记 / Tail 三段对照，并以 `GET /api/wal` 的真实统计对账；
+- **数据来源三态**：`counted`（真实 usage）、`estimated`（无 usage 的启发式粗估）、`live`（实时流推算）在 UI 显式标注，避免估算值被当成实测值；
+- **窗口按模型解析**：本地保守规则表推导 `contextWindow`，未收录模型走 200k 兜底并明示；用量超过窗口时按实际用量撑开，保证分母不小于分子。
 
 ---
 
@@ -105,7 +118,7 @@ pnpm install
 pnpm dev
 ```
 打开浏览器访问 `http://localhost:5173`。
-- **页面 1：实时拓扑 (Live Console)**：体验单向主干推进、ReAct 自愈分叉演练、上下文微压缩抽屉审查与双向门禁；
+- **页面 1：实时拓扑 (Live Console)**：体验单向主干推进、ReAct 自愈分叉演练、底部上下文水位明细抽屉与双向门禁；
 - **页面 2：会话时光机 (Session Replay)**：点击上方「加载真实样本」，或者直接**把电脑上的任意 `.jsonl` 拖入画布**，通过时间轴播放器像看电影一样回放完整执行拓扑！
 
 #### 模式 B：启动跨进程 Local Bridge (接入本地真实 Agent / 流水线)
@@ -126,28 +139,42 @@ pnpm test:workflow
 
 ## 自动化测试与工程质量
 
-全仓包含 **86 项深度单元与集成测试**，覆盖 Bridge RPC 挂起、L1 确定性硬断言、WAL 离线指针、Prompt Caching 稳定性及 JSONL 聚合折叠算法：
+全仓包含 **233 项单元与集成测试**，覆盖 Bridge RPC 挂起、L1 确定性硬断言、WAL 离线指针、Prompt Caching 前缀保真、JSONL 聚合折叠、7-part 上下文采集对账、压缩机会剖析纯函数与模型窗口解析：
 
 ```bash
-# 执行全量单元测试 (86 passed, 100%)
+# 执行全量单元测试 (233 passed, 0 fail)
 pnpm test
 
-# 代码风格与语法检查 (OxLint 零警告)
-pnpm lint
+# 静态检查 (oxlint，当前 9 条 warning，均为 react-hooks 与 fast-refresh 提示)
+pnpm exec oxlint
 
 # 生产级构建打包 (TypeScript 严格类型检查)
 pnpm build
 ```
+
+本机装有 `rtk` 命令包装器时，`pnpm lint` 会被转发到不存在的 `eslint`，改用 `pnpm exec oxlint` 即可。
 
 ---
 
 ## 技术栈与选型
 
 - **拓扑编排**：`@xyflow/react` (React Flow 12)
-- **前端视图**：`React 19` + `TypeScript 5` + `Vite 8` + `Tailwind CSS 4`
+- **前端视图**：`React 19` + `TypeScript 7` + `Vite 8` + `Tailwind CSS 4`
+- **Treemap 布局**：`d3-hierarchy` (squarified)
 - **伴生网关**：`Hono 4` + `@hono/node-server` + `@hono/node-ws` + `ws`
 - **基础工具**：`pathe` + `radash`
 - **代码质检**：`oxlint` (极速 Rust 静态分析器)
+
+---
+
+## 已知限制
+
+- 演示沙盒仍使用内置假会话（会话列表已单独分区），会话时光机默认载入内置样例，这类水位会显示 `估算 Estimated`；
+- 模型窗口规则表刻意保守，仅收录 Gemini、Claude、gpt-oss、DeepSeek-V4 四类，其它模型按 200k 兜底并显式标注；
+- 用量超过兜底窗口时按实际用量撑开，此时占用显示 100% 且剩余为 0，这是尺度诚实而非窗口溢出；
+- 原文留存策略（是否只保留最近 N 次请求）尚未拍板；
+- 真实上下文压缩（Agent 侧 tool_result 钩子介入）明确暂缓，当前压缩只作用于观测副本；
+- 未落地特性清单见 `docs/BACKLOG.md` 与 `openspec/changes/future-*`。
 
 ---
 

@@ -46,10 +46,13 @@
 - 合并方式：逐文件拷回主仓库 → 主仓库 `pnpm build` + `pnpm test`（219/0）→ 关终端 / 删 worktree / 删分支
 
 ## 6. 后续可选项 (Backlog)
-- [ ] 会话级 spark 曲线（Magpie `spark()`：按请求序列画 prompt 体量曲线，点任一点切到那次请求的窗口）
-- [ ] 卡片折叠记忆（`ctxShut`）与折叠态 parts 堆叠细条
-- [ ] 原文内存窗口策略（Magpie 只保留最近 10 次请求原文），NetDive 目前直接取自会话 JSONL
-- [ ] **暂缓（2026-11-08 拍板）**：真实上下文压缩（Agent 侧 tool_result 钩子介入）先不做，架构预留见 `docs/BACKLOG.md` 第一节
-- [ ] **立即可做**：遥测副本层「压缩机会剖析」——用 `isCompactionNeeded` 判定哪里该压、`compactToolLines` 预演压完什么样（Head 15 / 标记 / Tail 15）、用 `GET /api/wal` 的 `getWalStats()` 真实对账替代硬编码 42000；算法升级候选（结构化保边界 / 重复行合并 / read 类结构签名）见 `docs/BACKLOG.md` 第二节
-- [ ] **技术债**：浮层「微压缩」tab 降级为只读注解；底部「一键修剪」改为 WAL 真实账，删除硬编码释放量
+
+> 本节前四项已分别立项为 `openspec/changes/future-*` 提案，索引见 `docs/BACKLOG.md` 第七节；后两项已在 `compaction-opportunity-inspector` 变更中落地。
+
+- [ ] 会话级 spark 曲线（Magpie `spark()`：按请求序列画 prompt 体量曲线，点任一点切到那次请求的窗口）→ `future-context-spark-timeline`
+- [ ] 卡片折叠记忆（`ctxShut`）与折叠态 parts 堆叠细条 → `future-context-card-fold-memory`
+- [ ] 原文内存窗口策略（Magpie 只保留最近 10 次请求原文），NetDive 目前直接取自会话 JSONL → `future-transcript-text-retention-policy`
+- [ ] **暂缓（2026-11-08 拍板）**：真实上下文压缩（Agent 侧 tool_result 钩子介入）先不做，架构预留见 `docs/BACKLOG.md` 第一节 → `future-real-context-compression`
+- [x] **已落地**：遥测副本层「压缩机会剖析」（`compaction-opportunity-inspector`）——`isCompactionNeeded` 判定、`compactToolLines` 三段预演、`GET /api/wal` 真实对账替代硬编码 42000
+- [x] **已落地**：浮层「微压缩」tab 改「压缩预览（只读）」；底部「一键修剪」与 `pruneContext` 已删除，硬编码释放量清零
 
