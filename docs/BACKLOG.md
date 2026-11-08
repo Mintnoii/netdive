@@ -181,3 +181,19 @@ NetDive 的定位是**旁路观测与拦截控制台**（见 `docs/POSITIONING.m
 **纪律沉淀**：凡面向 bridge 的新端点一律使用 `DEFAULT_BRIDGE_HTTP_URL`，禁止相对路径 —— 否则会出现"静默降级"（与记忆中「静默降级必须暴露失败原因」同源）。
 留档：`openspec/changes/fix-wal-stats-bridge-base-url/`
 
+---
+
+## 七、未落地特性索引（OpenSpec `future-*` 提案）
+
+所有「明确暂缓 / 未排期」的能力都已立项为独立提案档，避免只停留在本台账的散文里：
+
+| 提案 | 一句话 | 状态 |
+| :--- | :--- | :--- |
+| `future-context-spark-timeline` | 按请求序列画 prompt 体量曲线，点任一点切到那次请求的窗口 | 未排期 |
+| `future-context-card-fold-memory` | 抽屉折叠态记忆（`netdive.ctxShut`）+ 7-part 堆叠细条 | 未排期 |
+| `future-transcript-text-retention-policy` | 原文留存策略（只读当前会话 / 内存保留最近 N 次） | 未排期，需隐私口径拍板 |
+| `future-real-context-compression` | 真实上下文压缩（Agent 侧 tool_result 钩子介入） | **明确暂缓** |
+| `future-compaction-algorithm-upgrades` | 结构化保边界 / 重复行合并 / read 结构签名等算法升级 | 未排期 |
+| `future-demo-sandbox-badging` | 演示沙盒数据在画布上显式 demo 水印 | 未排期 |
+| `future-lab-import-from-live-observation` | 从压缩机会浮层一键把真实观测导入沙盒试算 | 未排期 |
+
