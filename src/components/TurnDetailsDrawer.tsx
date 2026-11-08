@@ -172,11 +172,17 @@ export const TurnDetailsDrawer: React.FC<TurnDetailsDrawerProps> = ({
             </div>
           </div>
 
-          <div className="font-semibold text-sm text-[#1E2024] leading-snug">
-            {turn.title}
+          <div className="font-semibold text-sm text-[#1E2024] leading-snug break-all whitespace-pre-wrap">
+            {turn.intent || turn.title}
           </div>
 
-          <div className="p-2.5 rounded-lg bg-[#FAF8F5] border border-[#E5E0D8] text-[11px] text-[#5C5549] leading-relaxed font-mono">
+          {turn.intent && turn.title && !turn.title.includes('用户') && !turn.title.includes('User') && (
+            <div className="text-[11px] text-[#8F887D] font-mono break-all whitespace-pre-wrap">
+              {turn.title}
+            </div>
+          )}
+
+          <div className="p-2.5 rounded-lg bg-[#FAF8F5] border border-[#E5E0D8] text-[11px] text-[#5C5549] leading-relaxed font-mono break-all whitespace-pre-wrap">
             {turn.intent}
           </div>
 
@@ -335,7 +341,7 @@ export const TurnDetailsDrawer: React.FC<TurnDetailsDrawerProps> = ({
 
                       {/* 思考推演或自然语言 Delta */}
                       {ev.delta && (
-                        <div className="p-2 rounded bg-white border border-[#E5E0D8] text-[11px] font-mono text-[#1E2024] whitespace-pre-wrap leading-relaxed shadow-2xs">
+                        <div className="p-2 rounded bg-white border border-[#E5E0D8] text-[11px] font-mono text-[#1E2024] whitespace-pre-wrap break-all leading-relaxed shadow-2xs">
                           {formatNodeSummary(ev.delta)}
                         </div>
                       )}
@@ -346,7 +352,7 @@ export const TurnDetailsDrawer: React.FC<TurnDetailsDrawerProps> = ({
                           <span className="text-[10px] font-mono font-medium text-[#6E685E]">
                             工具入参 (Payload):
                           </span>
-                          <pre className="p-2 rounded bg-[#F4F0EA] border border-[#E5E0D8] text-[10px] font-mono text-[#1E2024] overflow-x-auto leading-normal select-all">
+                          <pre className="p-2 rounded bg-[#F4F0EA] border border-[#E5E0D8] text-[10px] font-mono text-[#1E2024] overflow-x-auto whitespace-pre-wrap break-all leading-normal select-all">
                             {JSON.stringify(ev.payload, null, 2)}
                           </pre>
                         </div>

@@ -163,22 +163,84 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
     return `⚡ 轮询 x${count}`
   }
 
-  // 若为非轮询的连续聚合节点
+  // 若为非轮询的连续聚合节点：必须优先提取具体文件或真实执行命令，绝不展示空洞无价值的“聚合x2”或“命令组x2”
   if (nodeData.isAggregated) {
     const count = nodeData.aggregateCount || 2
+
+    // 1) 优先提取明确的目标文件路径 (read / edit / file)
     const targetPath = (nodeData.payload?.path ||
       nodeData.payload?.file_path ||
-      nodeData.payload?.filePath) as string | undefined
+      nodeData.payload?.filePath ||
+      nodeData.payload?.file) as string | undefined
     if (targetPath) {
       return `${basename(targetPath)} x${count}`
     }
+
+    // 2) 针对 bash 命令行聚合，优先提取具体命令行首句或首词
     if (nodeData.gesture === 'bash') {
-      const cmd = String(nodeData.payload?.command || nodeData.observation?.command || '').trim()
-      const firstWord = cmd.replace(/^\$\s*/, '').split(/\s+/)[0]
-      if (firstWord) return `$ ${firstWord} x${count}`
-      return `⚡ 命令组 x${count}`
+      const rawCmd = String(
+        nodeData.payload?.command ||
+        (Array.isArray(nodeData.payload?.commands) ? (nodeData.payload.commands as string[])[0] : '') ||
+        nodeData.observation?.command ||
+        ''
+      ).trim()
+
+      const cleanCmd = (rawCmd || nodeData.title || '')
+        .replace(/\s*\(x\d+\)\s*$/i, '')
+        .replace(/^bash:\s*/i, '')
+        .replace(/^\$\s*/, '')
+        .replace(/\s*命令组.*$/i, '')
+        .trim()
+
+      const firstLineCmd = cleanCmd.split(/[\r\n]+/)[0]?.trim()
+      if (firstLineCmd) {
+        if (firstLineCmd.length <= 32) {
+          return `$ ${firstLineCmd} x${count}`
+        }
+        return `$ ${firstLineCmd.slice(0, 30)}... x${count}`
+      }
     }
-    return `⚡ 聚合 x${count}`
+
+    // 3) 从聚合标题中提纯具体实体（如 "file: App.tsx", "read: pipeline.ts (x3)", "rg "pattern""）
+    if (nodeData.title) {
+      const cleanTitle = nodeData.title
+        .replace(/\s*\(x\d+\)\s*$/i, '')
+        .replace(/^(bash|read|edit|file):\s*/i, '')
+        .trim()
+
+      if (cleanTitle && !/^(聚合调用|命令组|连续读取|连续编辑|执行节点)$/i.test(cleanTitle)) {
+        if (cleanTitle.length <= 32) {
+          return `${cleanTitle} x${count}`
+        }
+        return `${cleanTitle.slice(0, 30)}... x${count}`
+      }
+    }
+
+    // 4) 从子调用列表中嗅探首个子操作的目标实体
+    if (Array.isArray(nodeData.payload?.subCalls) && (nodeData.payload.subCalls as Record<string, unknown>[]).length > 0) {
+      const firstSubCall = (nodeData.payload.subCalls as Record<string, unknown>[])[0]
+      const subPath = (firstSubCall.payload as Record<string, unknown> | undefined)?.path as string | undefined
+      if (subPath) {
+        return `${basename(subPath)} x${count}`
+      }
+      const subCmd = String(
+        (firstSubCall.payload as Record<string, unknown> | undefined)?.command ||
+        (firstSubCall.observation as Record<string, unknown> | undefined)?.command ||
+        ''
+      ).trim()
+      if (subCmd) {
+        const cleanSub = subCmd.replace(/^\$\s*/, '').split(/[\r\n]+/)[0].trim()
+        if (cleanSub.length <= 32) return `$ ${cleanSub} x${count}`
+        return `$ ${cleanSub.slice(0, 30)}... x${count}`
+      }
+    }
+
+    // 5) 兜底依据手势给出具象动作而不是死板抽象名词
+    if (nodeData.gesture === 'read') return `代码检视 x${count}`
+    if (nodeData.gesture === 'edit') return `文件修改 x${count}`
+    if (nodeData.gesture === 'bash') return `$ 终端指令 x${count}`
+    if (nodeData.gesture === 'memory') return `记忆存取 x${count}`
+    return `${nodeData.gesture} x${count}`
   }
 
   // 5. 文件类型提取清晰的文件名 (read / edit)

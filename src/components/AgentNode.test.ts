@@ -260,6 +260,40 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
         }
         assert.equal(extractLandmarkLabel(data), '⚡ 轮询 x2')
       })
+
+      it('针对连续聚合节点提取具体文件或真实执行命令，绝不返回无意义的“聚合x2”或“命令组x2”', () => {
+        // 文件聚合
+        const fileAgg: AgentNodeData = {
+          gesture: 'read',
+          title: 'read: useTelemetryStream.ts (x3)',
+          isAggregated: true,
+          aggregateCount: 3,
+          status: 'completed',
+          payload: { path: 'src/hooks/useTelemetryStream.ts' },
+        }
+        assert.equal(extractLandmarkLabel(fileAgg), 'useTelemetryStream.ts x3')
+
+        // 命令聚合
+        const bashAgg: AgentNodeData = {
+          gesture: 'bash',
+          title: 'bash: orca 命令组 (x3)',
+          isAggregated: true,
+          aggregateCount: 3,
+          status: 'completed',
+          payload: { command: 'orca orchestration check' },
+        }
+        assert.equal(extractLandmarkLabel(bashAgg), '$ orca orchestration check x3')
+
+        // 仅有 title 的命令聚合
+        const bashTitleAgg: AgentNodeData = {
+          gesture: 'bash',
+          title: 'bash: pnpm test:pipeline (x2)',
+          isAggregated: true,
+          aggregateCount: 2,
+          status: 'completed',
+        }
+        assert.equal(extractLandmarkLabel(bashTitleAgg), '$ pnpm test:pipeline x2')
+      })
     })
 
     describe('3.3 文件类型：提纯清晰的文件名', () => {
