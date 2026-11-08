@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react'
 import {
   X,
   Layers,
-  Info,
   ChevronDown,
 } from 'lucide-react'
 import type {
@@ -230,11 +229,11 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
         aria-hidden="true"
       />
 
-      {/* 面板本体 (Floating Bottom Sheet: 高度恒等于 min(66vh, 640px)) */}
+      {/* 面板本体 (Floating Bottom Sheet: 内容驱动高度，上限 min(76vh, 720px)) */}
       <section
         role="region"
         aria-label="上下文水位明细抽屉"
-        className="fixed inset-x-0 bottom-0 z-50 flex flex-col h-[min(72vh,700px)] rounded-t-2xl border-t-2 border-[#DCD5C9] bg-[#FBF9F5] text-[#1E2024] font-sans [font-variant-numeric:tabular-nums] shadow-[0_-8px_24px_rgba(30,32,36,0.10)] overflow-hidden drawer-sheet-up"
+        className="fixed inset-x-0 bottom-0 z-50 flex flex-col max-h-[min(76vh,720px)] rounded-t-2xl border-t-2 border-[#DCD5C9] bg-[#FBF9F5] text-[#1E2024] font-sans [font-variant-numeric:tabular-nums] shadow-[0_-8px_24px_rgba(30,32,36,0.10)] overflow-hidden drawer-sheet-up"
       >
         {/* 顶部把手：点击即收起 */}
         <button
@@ -247,7 +246,7 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
         </button>
 
         {/* 内容区：三段卡片节奏 */}
-        <div className="flex-1 min-h-0 flex flex-col gap-3.5 px-5 pb-3">
+        <div className="min-h-0 flex flex-col gap-3.5 px-5 pb-3">
           {/* 第 1 段：顶部大盘 (Top Overview) */}
           <div className="shrink-0 flex flex-col gap-2">
             <div className="flex items-center justify-between">
@@ -287,7 +286,7 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
             </div>
 
             <div className="flex items-end justify-between gap-6">
-              {/* 大盘指标块 (.facts 风格：三格分别「已用 / 窗口上限 / 剩余」) */}
+              {/* 大盘指标块 (.facts 风格：四格分别「已用 / 窗口上限 / 剩余 / 压缩机会」) */}
               <div className="flex items-end gap-8 pt-2 border-t border-[#EFEAE2]">
                 {/* 格 1: 已用 */}
                 <div className="flex flex-col gap-1">
@@ -328,6 +327,33 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
                     </span>
                   </div>
                 </div>
+
+                {/* 格 4: 压缩机会 */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[#8F887D]">压缩机会</span>
+                  <div className="flex items-center gap-2">
+                    <div className="flex flex-col">
+                      <span className="text-[13px] font-semibold text-[#1E2024]">
+                        可折叠 {analysis.hitCount} 条
+                      </span>
+                      <span className="text-[10px] text-[#A8A29E] whitespace-nowrap">
+                        预计释放 {formatTokens(analysis.totalReclaimedChars)} 字符
+                        {walStats.isOffline
+                          ? ' · bridge 未连接'
+                          : walStats.stats
+                          ? ` · bridge 已折叠 ${walStats.stats.totalEntries} 条 / ${formatTokens(walStats.stats.totalReclaimedChars)} 字符`
+                          : ''}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsPreviewOverlayOpen(true)}
+                      className="h-6 px-2 text-[11px] rounded-md border border-[#DCD5C9] bg-white hover:border-[#B5AFA4] cursor-pointer shrink-0"
+                    >
+                      查看预演
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Cache 块 */}
@@ -362,12 +388,12 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
           </div>
 
           {/* 第 3 段：内容清单收敛为 7 个 part 概要行 */}
-          <div className="flex-1 min-h-0 flex flex-col border-t border-[#EFEAE2] pt-3.5">
+          <div className="min-h-0 flex flex-col border-t border-[#EFEAE2] pt-3.5">
             <div className="shrink-0 flex items-center justify-between pb-1.5 mb-1.5 select-none">
               <span className="text-[11px] font-semibold text-[#5E6573]">内容构成</span>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-1">
+            <div className="min-h-0 overflow-y-auto space-y-0.5 pr-1">
               {CONTEXT_PART_KINDS.map((kind) => {
                 const part = prompt.parts.find((p) => p.kind === kind)
                 const tokens = part?.tokens ?? 0
@@ -432,79 +458,19 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
           </div>
         </div>
 
-        {/* 压缩机会摘要条 (Compaction Opportunities Summary Bar) */}
-        <div className="shrink-0 px-5 py-2 border-t border-[#E5E0D8] bg-[#FAF8F5] flex items-center justify-between text-[11px] select-none">
-          {/* 左：推演账 */}
-          <div className="flex items-center space-x-2 text-[#1E2024]">
-            <span className="font-medium text-[11px]">
-              {analysis.hitCount === 0
-                ? '本次会话无折叠机会'
-                : `可折叠 ${analysis.hitCount} 条 · 预计释放 ${formatTokens(analysis.totalReclaimedChars)} 字符`}
-            </span>
-          </div>
-
-          {/* 中/右：真实账与预演按钮 */}
-          <div className="flex items-center space-x-4">
-            {walStats.isOffline ? (
-              <span className="text-[11px] text-[#8F887D]">bridge 未连接，仅显示推演账</span>
-            ) : walStats.stats ? (
-              <span className="text-[11px] text-[#5E6573]">
-                bridge 已折叠 {walStats.stats.totalEntries} 条 · 释放 {formatTokens(walStats.stats.totalReclaimedChars)} 字符
-              </span>
-            ) : null}
-
-            <button
-              type="button"
-              onClick={() => setIsPreviewOverlayOpen(true)}
-              className="px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-[#DCD5C9] bg-white text-[#1E2024] hover:bg-[#F4F0EA] hover:border-[#B5AFA4] transition-colors cursor-pointer shadow-2xs"
-            >
-              查看预演
-            </button>
-          </div>
-        </div>
-
         {/* 底部 (Footer) */}
-        <footer className="shrink-0 px-5 py-2.5 border-t border-[#E5E0D8] bg-[#F4F0EA] flex flex-col gap-2 select-none">
-          {/* 图例行 */}
-          <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[11px]">
-            {CONTEXT_PART_KINDS.map((kind) => {
-              const part = prompt.parts.find((p) => p.kind === kind)
-              const tokens = part?.tokens ?? 0
-              return (
-                <div key={kind} className="flex items-center gap-1.5 shrink-0">
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PART_DOT_CLASSES[kind]}`} />
-                  <span className="text-[#5E6573]">{PART_LABELS[kind]}</span>
-                  <span className="font-semibold text-[#1E2024]">{formatTokens(tokens)}</span>
-                </div>
-              )
-            })}
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#8F887D]" />
-              <span className="text-[#5E6573]">剩余空间</span>
-              <span className="font-semibold text-[#1E2024]">{formatTokens(remainingTokens)}</span>
-            </div>
-          </div>
-
-          {/* 操作与提示行 */}
-          <div className="flex items-center justify-between gap-3 pt-1 border-t border-[#EAE5DC]">
-            <div className="flex items-center space-x-1.5 text-[11px] text-[#5E6573] min-w-0 truncate">
-              <Info className="w-3.5 h-3.5 text-[#8F887D] shrink-0" />
-              <span className="truncate">
-                微压缩由 bridge 摄入时自动完成，本面板只做推演与对账
-              </span>
-            </div>
-
-            <div className="flex items-center space-x-2 shrink-0">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-3 py-1 text-[11px] font-medium rounded-lg border border-[#DCD5C9] bg-white text-[#5E6573] hover:text-[#1E2024] hover:border-[#B5AFA4] transition-colors cursor-pointer flex items-center space-x-1"
-              >
-                <ChevronDown className="w-3.5 h-3.5" />
-                <span>收起 (Esc)</span>
-              </button>
-            </div>
-          </div>
+        <footer className="shrink-0 px-5 py-2 border-t border-[#EFEAE2] flex items-center justify-between select-none">
+          <span className="text-[11px] text-[#A8A29E]">
+            微压缩由 bridge 摄入时自动完成
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1 text-[11px] font-medium rounded-lg border border-[#DCD5C9] bg-white text-[#5E6573] hover:text-[#1E2024] hover:border-[#B5AFA4] transition-colors cursor-pointer flex items-center space-x-1"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+            <span>收起 (Esc)</span>
+          </button>
         </footer>
       </section>
 
