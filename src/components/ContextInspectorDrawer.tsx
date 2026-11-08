@@ -294,55 +294,55 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
             <div className="shrink-0 mx-5 pt-2.5 pb-2 border-t border-[#EFEAE2]">
               <div className="grid grid-cols-[max-content_max-content_max-content_max-content_minmax(0,1fr)] items-end gap-x-10">
                 {/* 格 1: 已用 */}
-                <div className="flex flex-col">
+                <div className="grid grid-rows-[14px_18px_12px] gap-y-1.5">
                   <span className="text-[11px] leading-none text-[#8F887D]">已用</span>
-                  <span className="mt-1.5 text-base font-semibold leading-none text-[#1E2024]">
+                  <span className="text-[13px] font-semibold leading-none text-[#1E2024]">
                     {formatTokens(totalUsed)}
                   </span>
-                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                  <span className="text-[10px] leading-none text-[#A8A29E] truncate">
                     占窗口 {usagePercent}%
                     {(watermark.provenance === 'estimated' || watermark.provenance === 'live') && ' · 推算值'}
                   </span>
                 </div>
 
                 {/* 格 2: 窗口上限 */}
-                <div className="flex flex-col">
+                <div className="grid grid-rows-[14px_18px_12px] gap-y-1.5">
                   <span className="text-[11px] leading-none text-[#8F887D]">窗口上限</span>
-                  <span className="mt-1.5 text-[13px] font-semibold leading-none text-[#1E2024]">
+                  <span className="text-[13px] font-semibold leading-none text-[#1E2024]">
                     {formatTokens(maxCapacity)}
                   </span>
-                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                  <span className="text-[10px] leading-none text-[#A8A29E] truncate">
                     {watermark.windowSource === 'default' ? '未知模型 · 按 200k 兜底' : '模型规则表判定'}
                   </span>
                 </div>
 
                 {/* 格 3: 剩余 */}
-                <div className="flex flex-col">
+                <div className="grid grid-rows-[14px_18px_12px] gap-y-1.5">
                   <span className="text-[11px] leading-none text-[#8F887D]">剩余</span>
-                  <span className="mt-1.5 text-[13px] font-semibold leading-none text-[#1E2024]">
+                  <span className="text-[13px] font-semibold leading-none text-[#1E2024]">
                     {formatTokens(remainingTokens)}
                   </span>
-                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                  <span className="text-[10px] leading-none text-[#A8A29E] truncate">
                     占窗口 {100 - usagePercent}%
                   </span>
                 </div>
 
                 {/* 格 4: 压缩机会 */}
-                <div className="flex flex-col">
+                <div className="grid grid-rows-[14px_18px_12px] gap-y-1.5">
                   <span className="text-[11px] leading-none text-[#8F887D]">压缩机会</span>
-                  <div className="mt-1.5 flex items-center gap-2">
+                  <div className="flex items-center gap-2">
                     <span className="text-[13px] font-semibold leading-none text-[#1E2024]">
                       {analysis.hitCount} 条
                     </span>
                     <button
                       type="button"
                       onClick={() => setIsPreviewOverlayOpen(true)}
-                      className="h-5 px-1.5 rounded text-[10px] border border-[#DCD5C9] bg-white text-[#5E6573] hover:border-[#B5AFA4] cursor-pointer shrink-0"
+                      className="h-4 px-1.5 rounded text-[10px] leading-none border border-[#DCD5C9] bg-white text-[#5E6573] hover:border-[#B5AFA4] cursor-pointer shrink-0"
                     >
                       查看预演
                     </button>
                   </div>
-                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                  <span className="text-[10px] leading-none text-[#A8A29E] truncate">
                     预计释放 {formatTokens(analysis.totalReclaimedChars)} 字符
                     {walStats.isOffline
                       ? ' · bridge 未连接'
@@ -353,9 +353,9 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
                 </div>
 
                 {/* 格 5: 提示词缓存 */}
-                <div className="flex flex-col justify-self-end min-w-[240px]">
+                <div className="grid grid-rows-[14px_18px_12px] gap-y-1.5 justify-self-end min-w-[240px]">
                   <span className="text-[11px] leading-none text-[#8F887D]">提示词缓存</span>
-                  <div className="mt-1.5 flex items-center gap-2">
+                  <div className="flex items-center gap-2">
                     <span className="text-[13px] font-semibold leading-none text-[#1E2024]">
                       {cacheHitRate}% 命中
                     </span>
@@ -366,7 +366,7 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
                       />
                     </div>
                   </div>
-                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                  <span className="text-[10px] leading-none text-[#A8A29E] truncate">
                     {formatTokens(cacheReadTokens)} 来自缓存 · {formatTokens(totalUsed)} 新增
                   </span>
                 </div>
