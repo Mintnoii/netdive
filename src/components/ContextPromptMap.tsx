@@ -101,8 +101,7 @@ export const ContextPromptMap: React.FC<ContextPromptMapProps> = ({
       }
     }
 
-    // 按 tokens 降序
-    rawParts.sort((a, b) => b.tokens - a.tokens)
+    // 保持请求序列的语义顺序：系统提示词 → 工具定义 → Skills → 指令文件与记忆 → 读入的文件 → 工具结果 → 对话，靠前的优先占据左侧矩形
 
     const freeTokens = Math.max(0, prompt.window - prompt.tokens)
     if (rawParts.length === 0 && freeTokens <= 0) return []
@@ -228,7 +227,12 @@ export const ContextPromptMap: React.FC<ContextPromptMapProps> = ({
 
             const kind = leaf.data.kind
             const part = prompt.parts.find((p) => p.kind === kind)
-            const largestItemName = part?.items[0]?.name || '—'
+            const topItem = part?.items[0]
+            // 聚合项（如 chat 的 turns 汇总）没有语义名称，显示占位符而不是数字 0
+            const largestItemName =
+              topItem && topItem.tag !== 'turns' && topItem.name !== '0' && topItem.name !== ''
+                ? topItem.name
+                : '—'
             const isMatched = focus ? focus.kind === kind : false
             const focusClass = focus
               ? isMatched
