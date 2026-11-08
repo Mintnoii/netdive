@@ -1024,6 +1024,7 @@ function MainFlowCanvas() {
             {/* 底部 Token 水位与剪枝分布条 (Context Token Strip & Pruning) */}
             <ContextStripBar
               watermark={watermark}
+              events={rawEvents}
               prunableItems={prunableItems}
               isInspectorOpen={isInspectorOpen}
               onInspect={() => setIsInspectorOpen((open) => !open)}

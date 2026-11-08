@@ -20,6 +20,26 @@ import {
 } from './ContextPromptMap'
 import { ContextTextOverlay } from './ContextTextOverlay'
 import { analyzeCompactionOpportunities } from '../services/compactionOpportunities'
+import { buildTrendModel } from '../services/contextTrend'
+import { ContextTrendTrack } from './ContextTrendTrack'
+import {
+  buildStepLink,
+  resolveStepEvents,
+  collectActualUsage,
+  compareWithPrevious,
+  segmentKinds,
+  REPLY_SEGMENTS,
+  type StepLink,
+  type ReplySegment,
+} from '../services/contextBrowser'
+import {
+  PROVENANCE_BADGES,
+  ANNOTATION_BADGES,
+  buildProvenanceView,
+  buildContextProjection,
+  projectionNotice,
+  isStepBeforePrune,
+} from '../services/contextProvenance'
 import { useWalStats } from '../hooks/useWalStats'
 import { CompactionPreviewOverlay } from './CompactionPreviewOverlay'
 import { FALLBACK_CONTEXT_WINDOW } from '../services/modelWindows'
@@ -38,30 +58,6 @@ const HEALTH_BADGES = [
   { max: 85, label: '告警', cls: 'bg-amber-50 text-amber-700', dotCls: 'bg-amber-500' },
   { max: Infinity, label: '紧张', cls: 'bg-rose-50 text-rose-700', dotCls: 'bg-rose-500' },
 ] as const
-
-const PROVENANCE_BADGES: Record<
-  'counted' | 'estimated' | 'live',
-  { label: string; cls: string; dotCls: string; title: string }
-> = {
-  counted: {
-    label: '实测 Counted',
-    cls: 'bg-emerald-50 text-emerald-700',
-    dotCls: 'bg-emerald-500',
-    title: '来自真实 usage（JSONL 的 message.usage）',
-  },
-  estimated: {
-    label: '估算 Estimated',
-    cls: 'bg-amber-50 text-amber-700',
-    dotCls: 'bg-amber-500',
-    title: '该会话 JSONL 未记录 usage，Token 按字符量启发式粗估',
-  },
-  live: {
-    label: '实时 Live',
-    cls: 'bg-indigo-50 text-indigo-700',
-    dotCls: 'bg-indigo-500',
-    title: '由实时流增量与手势启发式推算，非真实 usage',
-  },
-}
 
 const PART_DOT_CLASSES: Record<ContextPartKind, string> = {
   system: 'bg-violet-500',
@@ -94,6 +90,9 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
   const [focus, setFocus] = useState<PromptFocus | null>(null)
   const [overlay, setOverlay] = useState<{ kind: ContextPartKind } | null>(null)
   const [isPreviewOverlayOpen, setIsPreviewOverlayOpen] = useState(false)
+  const [hoverLink, setHoverLink] = useState<StepLink | null>(null)
+  const [pinLink, setPinLink] = useState<StepLink | null>(null)
+  const [segment, setSegment] = useState<ReplySegment | null>(null)
 
   const walStats = useWalStats(isOpen)
 
@@ -116,16 +115,26 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
           setOverlay(null)
           return
         }
+        if (pinLink !== null) {
+          setPinLink(null)
+          setHoverLink(null)
+          return
+        }
         onClose()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isOpen, isPreviewOverlayOpen, overlay, onClose])
+  }, [isOpen, isPreviewOverlayOpen, pinLink, overlay, onClose])
 
   // 1. 全维上下文指标计算 (契约对齐与兼容降级)
   const maxCapacity = watermark.maxCapacity || watermark.totalLimit || FALLBACK_CONTEXT_WINDOW
+
+  const trendModel = useMemo(
+    () => buildTrendModel(events ?? [], maxCapacity),
+    [events, maxCapacity]
+  )
   const systemPromptTokens = watermark.systemPrompt || 0
   const ltmTokens = watermark.ltm || 0
   const reasoningTokens = watermark.reasoningTokens || 0
@@ -152,6 +161,11 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
 
   const health = HEALTH_BADGES.find((h) => usagePercent < h.max) ?? HEALTH_BADGES[2]
   const provenanceBadge = watermark.provenance ? PROVENANCE_BADGES[watermark.provenance] : null
+  const provenanceView = useMemo(() => buildProvenanceView(events ?? []), [events])
+  const projectionNoticeText = useMemo(
+    () => projectionNotice(buildContextProjection(events ?? [])),
+    [events]
+  )
 
   // 2. 规范化 ContextPrompt 契约
   const prompt = useMemo<ContextPrompt>(() => {
@@ -214,6 +228,24 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
     return max > 0 ? max : 1
   }, [prompt.parts])
 
+  const activeLink = hoverLink ?? pinLink
+  const activePoint = activeLink
+    ? trendModel.points.find((p) => p.nodeId === activeLink.nodeId) ?? null
+    : null
+  const activeStepIndex = activePoint
+    ? trendModel.points.findIndex((p) => p.nodeId === activePoint.nodeId)
+    : -1
+  const stepComparison = compareWithPrevious(trendModel.points, activeStepIndex)
+  const visibleKinds = segmentKinds(segment)
+  const stepDigests = useMemo(
+    () => (activePoint ? resolveStepEvents(events ?? [], activePoint) : []),
+    [activePoint, events]
+  )
+  const actualUsage = useMemo(() => collectActualUsage(events ?? []), [events])
+  const reconstructedStep = activeLink
+    ? isStepBeforePrune(events ?? [], activeLink.nodeId)
+    : false
+
   const overlayPart = overlay
     ? prompt.parts.find((p) => p.kind === overlay.kind) ?? null
     : null
@@ -269,6 +301,19 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
                     <span>{provenanceBadge.label}</span>
                   </span>
                 )}
+                {provenanceView.annotations.map((annotation) => {
+                  const badge = ANNOTATION_BADGES[annotation]
+                  return (
+                    <span
+                      key={annotation}
+                      className={`inline-flex items-center gap-1.5 h-5 rounded-full px-2 text-[11px] font-medium ${badge.cls}`}
+                      title={badge.title}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${badge.dotCls}`} />
+                      <span>{badge.label}</span>
+                    </span>
+                  )
+                })}
               </div>
 
               <div className="flex-1" />
@@ -378,8 +423,73 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
             </div>
           </div>
 
-          {/* 第 2 段：上下文分布图 (ContextPromptMap: 单一 Treemap 视图) */}
-          <div className="shrink-0 border-t border-[#EFEAE2] pt-3.5">
+          {/* 第 1.5 段：上下文体量趋势与联动明细 (M1 + M2) */}
+          <div className="shrink-0 border-t border-[#EFEAE2] pt-3">
+            <ContextTrendTrack
+              model={trendModel}
+              activeNodeId={activeLink?.nodeId ?? null}
+              pinnedNodeId={pinLink?.nodeId ?? null}
+              onHoverStep={(point) => setHoverLink(point ? buildStepLink(point, 'hover') : null)}
+              onPinStep={(point) => setPinLink(buildStepLink(point, 'pinned'))}
+              onClearPin={() => setPinLink(null)}
+            />
+            <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[10px] leading-[16px] select-none">
+              {stepComparison.hasPrevious && (
+                <span
+                  className={`px-1.5 rounded font-medium ${
+                    stepComparison.tokenDelta < 0
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : 'bg-indigo-50 text-indigo-700'
+                  }`}
+                  title="较上一请求的窗口净变化，来自逐请求 usage / 推算序列"
+                >
+                  {stepComparison.tokenDelta >= 0 ? '+' : '−'}
+                  {formatTokens(Math.abs(stepComparison.tokenDelta))} · 较上一请求
+                </span>
+              )}
+              {actualUsage ? (
+                <span className="text-[#5E6573]" title="来自事件流里服务商报告的 message.usage">
+                  服务商实际 Input {formatTokens(actualUsage.input)} · Output{' '}
+                  {formatTokens(actualUsage.output)} · Cache {formatTokens(actualUsage.cacheRead)}
+                </span>
+              ) : (
+                <span className="text-[#A8A29E]">该会话未记录服务商 usage，仅显示推算值</span>
+              )}
+              {activeLink && (
+                <span className="text-[#8F887D]">
+                  {activeLink.mode === 'pinned' ? '已固定' : '预览'} 第{' '}
+                  {activeLink.stepIndex} 次 · 本轮新增 {stepDigests.length} 个事件
+                </span>
+              )}
+              {stepDigests.length > 0 && (
+                <span className="truncate max-w-[320px] text-[#A8A29E]">
+                  {stepDigests
+                    .slice(-2)
+                    .map((digest) => `${digest.title} (${digest.chars} 字符)`)
+                    .join(' · ')}
+                </span>
+              )}
+              {reconstructedStep && (
+                <span
+                  className="px-1.5 rounded bg-amber-50 text-amber-700"
+                  title={ANNOTATION_BADGES.reconstructed.title}
+                >
+                  该请求在压缩前 · 明细按事件摘要近似重建，非原始装配快照
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* 第 2 段：当前窗口构成快照 (ContextPromptMap: 单一 Treemap 视图) */}
+          <div className="shrink-0 border-t border-[#EFEAE2] pt-3">
+            <div className="shrink-0 pb-1 text-[10px] text-[#A8A29E]">
+              当前窗口构成快照 · 历史每步分布未留存，不作比例投影
+            </div>
+            {projectionNoticeText && (
+              <div className="shrink-0 pb-1 text-[10px] text-amber-700">
+                {projectionNoticeText}
+              </div>
+            )}
             <div className="h-[124px] w-full">
               <ContextPromptMap
                 prompt={prompt}
@@ -392,12 +502,36 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
 
           {/* 第 3 段：内容清单收敛为 7 个 part 概要行 */}
           <div className="min-h-0 flex flex-col border-t border-[#EFEAE2] pt-3.5">
-            <div className="shrink-0 flex items-center justify-between pb-1.5 mb-1.5 select-none">
+            <div className="shrink-0 flex items-center gap-2 flex-wrap pb-1.5 mb-1.5 select-none">
               <span className="text-[11px] font-semibold text-[#5E6573]">内容构成</span>
+              {(Object.keys(REPLY_SEGMENTS) as ReplySegment[]).map((key) => {
+                const count = REPLY_SEGMENTS[key].kinds.filter(
+                  (kind) => (prompt.parts.find((p) => p.kind === kind)?.tokens ?? 0) > 0
+                ).length
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setSegment(segment === key ? null : key)}
+                    className={`h-[18px] px-1.5 rounded text-[10px] border cursor-pointer transition-colors ${
+                      segment === key
+                        ? 'bg-[#1E2024] text-[#FBF9F5] border-[#1E2024]'
+                        : 'bg-white text-[#5E6573] border-[#DCD5C9] hover:border-[#B5AFA4]'
+                    }`}
+                  >
+                    {REPLY_SEGMENTS[key].label} {count}
+                  </button>
+                )
+              })}
+              <span className="text-[10px] text-[#A8A29E]">
+                按 7-part 分类派生 · 事件流无原生分段标签
+              </span>
             </div>
 
             <div className="min-h-0 overflow-y-auto space-y-0.5 pr-1">
-              {CONTEXT_PART_KINDS.map((kind) => {
+              {CONTEXT_PART_KINDS.filter(
+                (kind) => segment === null || visibleKinds.includes(kind)
+              ).map((kind) => {
                 const part = prompt.parts.find((p) => p.kind === kind)
                 const tokens = part?.tokens ?? 0
                 const isEmpty = tokens === 0

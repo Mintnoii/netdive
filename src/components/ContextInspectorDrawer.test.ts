@@ -2,9 +2,21 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { ContextInspectorDrawer } from './ContextInspectorDrawer'
 import { ContextStripBar } from './ContextStripBar'
+import { ContextTrendTrack } from './ContextTrendTrack'
+import { ContextTextOverlay } from './ContextTextOverlay'
+import { buildTrendModel } from '../services/contextTrend'
+import {
+  buildStepLink,
+  collectActualUsage,
+  compareWithPrevious,
+  searchAndSortItems,
+  segmentKinds,
+  detectOutcome,
+} from '../services/contextBrowser'
 import {
   type ContextWatermark,
   type PrunableItem,
+  type TelemetryEvent,
   DEFAULT_CONTEXT_WATERMARK,
   formatTokens,
 } from '../types/telemetry'
@@ -18,6 +30,10 @@ describe('ContextInspectorDrawer & ContextStripBar Unit Tests', () => {
 
     it('ContextStripBar 作为合法 React 组件函数成功导出', () => {
       assert.equal(typeof ContextStripBar, 'function')
+    })
+
+    it('ContextTrendTrack 作为合法 React 组件函数成功导出', () => {
+      assert.equal(typeof ContextTrendTrack, 'function')
     })
   })
 
@@ -161,6 +177,144 @@ describe('ContextInspectorDrawer & ContextStripBar Unit Tests', () => {
       const targetPrunable = 4000
       const calculatedReclaimed = totalPrunable - targetPrunable
       assert.equal(calculatedReclaimed, 42000)
+    })
+  })
+
+  describe('5. M1 上下文趋势轨道与抽屉对账 (Context Trend Track)', () => {
+    const window = 200000
+    const countedEvents: TelemetryEvent[] = [
+      { nodeId: 'u1', type: 'node_complete', actor: 'Human Operator', gesture: 'read', delta: '跑测试' },
+      {
+        nodeId: 'a1',
+        type: 'node_complete',
+        gesture: 'think',
+        delta: '先规划',
+        timestamp: 1000,
+        usage: { input: 42000, output: 900 },
+      },
+      {
+        nodeId: 'prune-1',
+        type: 'context_pruned',
+        title: '微压缩释放',
+        timestamp: 1500,
+        reclaimedTokens: 12000,
+      },
+      {
+        nodeId: 'a2',
+        type: 'node_complete',
+        gesture: 'think',
+        delta: '继续',
+        timestamp: 2000,
+        usage: { input: 30000, output: 700 },
+      },
+    ]
+
+    it('趋势模型的窗口与抽屉一致，headroom 按实测末次请求对账', () => {
+      const model = buildTrendModel(countedEvents, window)
+
+      assert.equal(model.window, window)
+      assert.equal(model.provenance, 'counted')
+      assert.equal(model.points.length, 2)
+      assert.equal(model.headroomTokens, window - 30000)
+      assert.equal(model.points[1].delta, -12000)
+    })
+
+    it('✂ 压缩事件挂到最近请求点且回收量为负', () => {
+      const { markers, points } = buildTrendModel(countedEvents, window)
+
+      assert.equal(markers.length, 1)
+      assert.equal(markers[0].deltaTokens, -12000)
+      assert.equal(points[0].markers.length, 1)
+    })
+
+    it('抽屉收到无 usage 的会话时显式标推算值，不冒充实测', () => {
+      const model = buildTrendModel(
+        [{ nodeId: 't1', type: 'node_complete', gesture: 'think', delta: 'x'.repeat(200) }],
+        window
+      )
+
+      assert.equal(model.provenance, 'estimated')
+      assert.ok(model.points.every((point) => point.provenance === 'estimated'))
+    })
+  })
+
+  describe('6. M2 图表联动与检视手感契约', () => {
+    const countedEvents: TelemetryEvent[] = [
+      {
+        nodeId: 'a1',
+        type: 'node_complete',
+        gesture: 'think',
+        delta: '先规划',
+        timestamp: 1000,
+        usage: { input: 22000, output: 300, cacheRead: 800 },
+      },
+      {
+        nodeId: 'prune-1',
+        type: 'context_pruned',
+        title: '微压缩释放',
+        timestamp: 1500,
+        reclaimedTokens: 4000,
+      },
+      {
+        nodeId: 'a2',
+        type: 'node_complete',
+        gesture: 'think',
+        delta: '继续',
+        timestamp: 2000,
+        usage: { input: 18000, output: 700, cacheRead: 1500 },
+      },
+    ]
+
+    it('联动指针按 nodeId 跨粒度稳定，不携带原文或播放器位置', () => {
+      const model = buildTrendModel(countedEvents, 200000)
+      const link = buildStepLink(model.points[1], 'hover')
+
+      assert.deepEqual(link, { stepIndex: 2, nodeId: 'a2', mode: 'hover' })
+      assert.deepEqual(Object.keys(link).sort(), ['mode', 'nodeId', 'stepIndex'])
+    })
+
+    it('服务商实际 usage 与推算值可并列对账', () => {
+      const actual = collectActualUsage(countedEvents)
+
+      assert.equal(actual?.input, 18000)
+      assert.equal(actual?.cacheRead, 1500)
+      assert.equal(actual?.nodeId, 'a2')
+      assert.equal(buildTrendModel(countedEvents, 200000).provenance, 'counted')
+    })
+
+    it('差异徽标取逐请求净变化，压缩回收为负', () => {
+      const model = buildTrendModel(countedEvents, 200000)
+      const comparison = compareWithPrevious(model.points, 1)
+
+      assert.equal(comparison.tokenDelta, -4000)
+      assert.equal(comparison.hasPrevious, true)
+      assert.equal(compareWithPrevious(model.points, 0).hasPrevious, false)
+    })
+
+    it('三段筛选互斥覆盖 7-part，清除后恢复全部', () => {
+      const kinds = (['thinking', 'tools', 'answer'] as const).flatMap((key) =>
+        segmentKinds(key)
+      )
+
+      assert.equal(kinds.length, 7)
+      assert.equal(new Set(kinds).size, 7)
+      assert.deepEqual(segmentKinds(null), [])
+    })
+
+    it('浮层导出与独立搜索、成败判定契约', () => {
+      assert.equal(typeof ContextTextOverlay, 'function')
+
+      const ranked = searchAndSortItems(
+        [
+          { name: 'b', tokens: 10, tag: 'result' },
+          { name: 'a', tokens: 50 },
+        ],
+        'result',
+        'size'
+      )
+      assert.equal(ranked.length, 1)
+      assert.equal(ranked[0].index, 0)
+      assert.equal(detectOutcome('✓ 248 tests passed'), 'ok')
     })
   })
 })

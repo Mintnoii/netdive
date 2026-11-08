@@ -101,6 +101,28 @@ export interface ContextPrompt {
   parts: ContextPart[]
 }
 
+/**
+ * 与 provenance 三态正交的可信度标注。
+ * 三态回答「显示的数从哪来」，标注回答「还有哪类证据可对照」。
+ * 二者互不影响，改写三态会牵动水位条、抽屉与既有契约测试。
+ */
+export type ContextAnnotation = 'actualReported' | 'reconstructed'
+
+/** 服务商报告的原始 usage，供窗口装配值并列对照 */
+export interface ActualUsageReport {
+  input: number
+  output: number
+  cacheRead: number
+  /** 最后一次报告 usage 的事件 ID */
+  nodeId?: string
+}
+
+/** 当前视图的可信度标注，由 contextProvenance 从事件流派生，供下游消费者读取 */
+export interface ContextProvenanceView {
+  annotations: ContextAnnotation[]
+  actualReported?: ActualUsageReport
+}
+
 /** 上下文水位与 Token 消耗分布契约 (Context Watermark) */
 export interface ContextWatermark {
   totalLimit: number

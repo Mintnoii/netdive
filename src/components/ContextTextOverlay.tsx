@@ -5,6 +5,20 @@ import type { ContextPart, ContextPartKind, ContextItem } from '../types/telemet
 import { formatTokens } from '../types/telemetry'
 import { PART_LABELS } from './ContextPromptMap'
 import { microCompactor } from '../services/microCompactor'
+import {
+  searchAndSortItems,
+  detectOutcome,
+  detectFileRefs,
+  classifyMarkdownLines,
+  countLines,
+  sourceChipOf,
+  type ItemSort,
+  type MarkdownLineKind,
+} from '../services/contextBrowser'
+import {
+  CONTEXT_DETAIL_LIMITS,
+  resolveDetailWindow,
+} from '../services/contextProvenance'
 
 export interface ContextTextOverlayProps {
   isOpen: boolean
@@ -25,6 +39,16 @@ const PART_DOT_CLASSES: Record<ContextPartKind, string> = {
 }
 
 const FALLBACK_NO_CONTENT = '该条目未在 JSONL 中记录原文，Token 由字符量折算'
+
+type ItemView = 'raw' | 'markdown' | 'compact'
+
+const MD_LINE_CLASSES: Record<MarkdownLineKind, string> = {
+  heading: 'text-[12px] font-semibold text-[#1E2024]',
+  list: 'text-[#5E6573]',
+  code: 'text-sky-700 bg-[#F4F0EA]',
+  quote: 'text-amber-700 italic',
+  text: 'text-[#3D3831]',
+}
 
 function renderHighlightedSnippet(content: string) {
   const HIGHLIGHT_RULES: Array<{ match: (line: string) => boolean; cls: string }> = [
@@ -67,15 +91,17 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
     initialItemIndex < part.items.length
 
   const [showAll, setShowAll] = useState<boolean>(!hasInitialItem)
-  const [pageSize, setPageSize] = useState<number>(100)
+  const [pageSize, setPageSize] = useState<number>(CONTEXT_DETAIL_LIMITS.itemsPerPage)
   const [expandedIndices, setExpandedIndices] = useState<Set<number>>(() => {
     if (hasInitialItem) {
       return new Set([initialItemIndex])
     }
     return new Set()
   })
-  const [itemTabs, setItemTabs] = useState<Record<number, 'raw' | 'compact'>>({})
+  const [itemTabs, setItemTabs] = useState<Record<number, ItemView>>({})
   const [copiedIndices, setCopiedIndices] = useState<Record<number, boolean>>({})
+  const [query, setQuery] = useState('')
+  const [sortBy, setSortBy] = useState<ItemSort>('size')
 
   // 同步重置状态
   useEffect(() => {
@@ -90,6 +116,8 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
     setPageSize(100)
     setItemTabs({})
     setCopiedIndices({})
+    setQuery('')
+    setSortBy('size')
     if (hasInit) {
       setExpandedIndices(new Set([initialItemIndex]))
     } else {
@@ -127,7 +155,7 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
     })
   }
 
-  const setItemTab = (idx: number, tab: 'raw' | 'compact') => {
+  const setItemTab = (idx: number, tab: ItemView) => {
     setItemTabs((prev) => ({ ...prev, [idx]: tab }))
   }
 
@@ -154,14 +182,18 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
     return res.output
   }
 
-  const isSingleItemView = hasInitialItem && !showAll
+  const rankedItems = searchAndSortItems(part.items, query, sortBy)
+  const isSingleItemView = hasInitialItem && !showAll && query.trim() === ''
+  const detailWindow = resolveDetailWindow(rankedItems.length, pageSize)
 
   const displayedItems: Array<{ item: ContextItem; index: number }> = isSingleItemView
     ? [{ item: part.items[initialItemIndex!], index: initialItemIndex! }]
-    : part.items.slice(0, pageSize).map((item, index) => ({ item, index }))
+    : rankedItems.slice(0, detailWindow.visible)
 
-  const remainingCount = part.items.length - pageSize
-  const nextMoreCount = Math.min(100, remainingCount)
+  const remainingCount = detailWindow.hasMore
+    ? rankedItems.length - detailWindow.visible
+    : 0
+  const nextMoreCount = Math.min(CONTEXT_DETAIL_LIMITS.itemsPerPage, remainingCount)
 
   return (
     <div
@@ -201,22 +233,62 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
 
         {/* 说明行 */}
         <div className="shrink-0 px-5 py-2 text-[10px] text-[#8F887D] border-b border-[#F0EBE1] bg-[#FAF8F5] select-none">
-          原文来自本次会话 JSONL；未记录原文的条目会明确提示，不做伪造。
+          原文来自本次会话 JSONL；未记录原文的条目会明确提示，不做伪造。文件引用卡的尺寸按字符量推算，无缩略图数据。
+        </div>
+
+        {/* 检视工具栏：每类独立搜索与排序 */}
+        <div className="shrink-0 px-5 py-2 border-b border-[#F0EBE1] bg-[#FAF8F5] flex items-center gap-2 select-none">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索条目名称或来源标签"
+            className="h-6 min-w-0 flex-1 px-2 rounded border border-[#DCD5C9] bg-white text-[11px] text-[#1E2024] outline-none focus:border-[#B5AFA4]"
+          />
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setSortBy('size')}
+              className={`px-1.5 h-5 rounded text-[10px] border cursor-pointer ${
+                sortBy === 'size'
+                  ? 'bg-[#1E2024] text-[#FBF9F5] border-[#1E2024]'
+                  : 'bg-white text-[#5E6573] border-[#DCD5C9]'
+              }`}
+            >
+              按体量
+            </button>
+            <button
+              type="button"
+              onClick={() => setSortBy('name')}
+              className={`px-1.5 h-5 rounded text-[10px] border cursor-pointer ${
+                sortBy === 'name'
+                  ? 'bg-[#1E2024] text-[#FBF9F5] border-[#1E2024]'
+                  : 'bg-white text-[#5E6573] border-[#DCD5C9]'
+              }`}
+            >
+              按名称
+            </button>
+          </div>
+          <span className="text-[10px] text-[#A8A29E] shrink-0">
+            {rankedItems.length} / {part.items.length} 条
+          </span>
         </div>
 
         {/* 主体 */}
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3 space-y-1.5">
           {displayedItems.length === 0 ? (
             <div className="text-center py-8 text-[11px] text-[#8F887D]">
-              该分类暂无条目
+              {query.trim() ? '没有匹配的条目' : '该分类暂无条目'}
             </div>
           ) : (
             displayedItems.map(({ item, index }) => {
               const isItemExpanded = expandedIndices.has(index)
               const tab = itemTabs[index] ?? 'raw'
               const isCopied = copiedIndices[index] ?? false
+              const outcome = detectOutcome(item.content)
+              const fileRefs = detectFileRefs(item.content)
 
-              const displayedText = tab === 'raw' ? item.content || null : getCompactedOutput(item)
+              const displayedText = tab === 'compact' ? getCompactedOutput(item) : item.content || null
 
               return (
                 <div key={`${item.name}-${index}`} className="flex flex-col">
@@ -240,14 +312,29 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
                           ×{item.n}
                         </span>
                       ) : null}
-                      {item.tag ? (
-                        <code className="text-[9px] font-mono px-1 py-0.2 rounded bg-[#EAE5DC] text-[#5E6573] border border-[#DCD5C9] shrink-0">
-                          {item.tag}
-                        </code>
-                      ) : null}
+                      <code
+                        className="text-[9px] font-mono px-1 py-0.2 rounded bg-[#EAE5DC] text-[#5E6573] border border-[#DCD5C9] shrink-0"
+                        title="来源标签取自 JSONL 的 tag，未造插件命名空间"
+                      >
+                        {sourceChipOf(item)}
+                      </code>
+                      {outcome !== 'unknown' && (
+                        <span
+                          className={`text-[9px] px-1 rounded shrink-0 ${
+                            outcome === 'ok'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-rose-50 text-rose-700'
+                          }`}
+                        >
+                          {outcome === 'ok' ? 'OK' : 'ERROR'}
+                        </span>
+                      )}
                     </div>
 
                     <div className="flex items-center space-x-2 shrink-0">
+                      <span className="text-[9px] text-[#A8A29E]">
+                        {countLines(item.content)} 行
+                      </span>
                       <span className="text-[10px] font-mono text-right text-[#5E6573] font-semibold">
                         {formatTokens(item.tokens)}
                       </span>
@@ -270,6 +357,17 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
                             }`}
                           >
                             原文
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setItemTab(index, 'markdown')}
+                            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                              tab === 'markdown'
+                                ? 'bg-white text-[#1E2024] shadow-xs font-semibold'
+                                : 'text-[#5E6573] hover:text-[#1E2024]'
+                            }`}
+                          >
+                            Markdown
                           </button>
                           <button
                             type="button"
@@ -311,15 +409,39 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
                       )}
 
                       {/* 文本区 */}
-                      <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all max-h-[320px] overflow-y-auto p-2.5 bg-white border border-[#E5E0D8] rounded-lg text-[#1E2024] selection:bg-violet-200 m-2">
-                        <code>
-                          {displayedText ? (
-                            renderHighlightedSnippet(displayedText)
-                          ) : (
-                            <span className="text-[#8F887D] italic">{FALLBACK_NO_CONTENT}</span>
-                          )}
-                        </code>
-                      </pre>
+                      {tab === 'markdown' && displayedText ? (
+                        <div className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all max-h-[320px] overflow-y-auto p-2.5 bg-white border border-[#E5E0D8] rounded-lg m-2">
+                          {classifyMarkdownLines(displayedText).map((line, lineIdx) => (
+                            <div key={lineIdx} className={MD_LINE_CLASSES[line.kind]}>
+                              {line.text || ' '}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all max-h-[320px] overflow-y-auto p-2.5 bg-white border border-[#E5E0D8] rounded-lg text-[#1E2024] selection:bg-violet-200 m-2">
+                          <code>
+                            {displayedText ? (
+                              renderHighlightedSnippet(displayedText)
+                            ) : (
+                              <span className="text-[#8F887D] italic">{FALLBACK_NO_CONTENT}</span>
+                            )}
+                          </code>
+                        </pre>
+                      )}
+
+                      {fileRefs.length > 0 && (
+                        <div className="px-2.5 pb-2 flex flex-wrap gap-1.5 select-none">
+                          {fileRefs.map((ref) => (
+                            <span
+                              key={ref.path}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-[#F4F0EA] border border-[#E5E0D8] text-[#5E6573]"
+                              title="事件流仅记录文本引用，尺寸与 token 按字符量推算"
+                            >
+                              {ref.path} · {ref.chars} 字符 · ~{ref.tokens} token
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -340,12 +462,19 @@ export const ContextTextOverlay: React.FC<ContextTextOverlayProps> = ({
             </div>
           )}
 
-          {/* 完整列表分页加载更多 */}
-          {!isSingleItemView && remainingCount > 0 && (
+          {/* 触到硬上限时给可读降级文案，不静默截断 */}
+          {!isSingleItemView && detailWindow.notice && (
+            <div className="pt-2 pb-1 text-center text-[10px] text-amber-700">
+              {detailWindow.notice}
+            </div>
+          )}
+
+          {/* 完整列表按页补载 */}
+          {!isSingleItemView && remainingCount > 0 && !detailWindow.notice && (
             <div className="pt-2 pb-1 flex justify-center shrink-0">
               <button
                 type="button"
-                onClick={() => setPageSize((prev) => prev + 100)}
+                onClick={() => setPageSize((prev) => prev + CONTEXT_DETAIL_LIMITS.itemsPerPage)}
                 className="px-3 py-1 text-[11px] font-medium rounded-md border border-[#DCD5C9] bg-white text-[#5E6573] hover:text-[#1E2024] hover:border-[#B5AFA4] transition-colors cursor-pointer"
               >
                 显示更多 {nextMoreCount} 条

@@ -8,7 +8,7 @@
     "dev:all": "tsx scripts/dev-all.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "tsx --test src/server/bridge.test.ts src/services/assertionEngine.test.ts src/services/microCompactor.test.ts src/services/transcriptParser.test.ts src/pages/CompactorLabPage.test.ts src/client/reporter.test.ts src/hooks/useTelemetryStream.test.ts src/components/NodeContextMenu.test.ts src/components/AgentNode.test.ts src/components/ContextInspectorDrawer.test.ts src/services/contextPrompt.test.ts src/services/compactionOpportunities.test.ts src/services/modelWindows.test.ts",
+    "test": "tsx --test src/server/bridge.test.ts src/services/assertionEngine.test.ts src/services/microCompactor.test.ts src/services/transcriptParser.test.ts src/pages/CompactorLabPage.test.ts src/client/reporter.test.ts src/hooks/useTelemetryStream.test.ts src/components/NodeContextMenu.test.ts src/components/AgentNode.test.ts src/components/ContextInspectorDrawer.test.ts src/services/contextPrompt.test.ts src/services/compactionOpportunities.test.ts src/services/modelWindows.test.ts src/services/contextTrend.test.ts src/services/contextBrowser.test.ts src/services/contextProvenance.test.ts",
     "preview": "vite preview",
     "start": "tsx src/server/index.ts",
     "test:workflow": "tsx scripts/test-workflow.ts",

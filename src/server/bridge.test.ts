@@ -2,7 +2,8 @@ import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
 import { startBridgeServer, type RunningBridgeServer } from './bridge'
-import type { TelemetryEvent, GateDecision } from '../types/telemetry'
+import type { TelemetryEvent, GateDecision, ContextWatermark } from '../types/telemetry'
+import { DEFAULT_CONTEXT_WATERMARK } from '../types/telemetry'
 
 const TEST_PORT = 4575
 const TEST_HOST = '127.0.0.1'
@@ -964,6 +965,50 @@ describe('Telemetry Event Normalization & Contract Robustness', () => {
     assert.equal(item.linesCount, 40)
     // 40 行 * ~35 字符 = ~1400 字符 -> ~350 Tokens
     assert(item.tokens > 300 && item.tokens < 500, `Expected ~350 tokens, got ${item.tokens}`)
+  })
+})
+
+describe('Context provenance 正交标注契约 (M3)', () => {
+  const ev = (partial: Partial<TelemetryEvent>): TelemetryEvent => ({
+    nodeId: 'node',
+    type: 'node_complete',
+    ...partial,
+  })
+
+  it('带 usage 时水位为 counted，并列 actualReported 标注与实际值', async () => {
+    const { resolveAnnotations, buildProvenanceView } = await import(
+      '../services/contextProvenance'
+    )
+    const events = [ev({ nodeId: 'a1', usage: { input: 14000, output: 320 } })]
+    const watermark: ContextWatermark = { ...DEFAULT_CONTEXT_WATERMARK, provenance: 'counted' }
+
+    assert.equal(watermark.provenance, 'counted')
+    assert.deepEqual(resolveAnnotations(events), ['actualReported'])
+    assert.equal(buildProvenanceView(events).actualReported?.input, 14000)
+  })
+
+  it('无 usage 时水位为 estimated，不编造实际值标注', async () => {
+    const { resolveAnnotations, buildProvenanceView } = await import(
+      '../services/contextProvenance'
+    )
+    const events = [ev({ nodeId: 't1', gesture: 'think', delta: '回复' })]
+    const watermark: ContextWatermark = { ...DEFAULT_CONTEXT_WATERMARK, provenance: 'estimated' }
+
+    assert.equal(watermark.provenance, 'estimated')
+    assert.deepEqual(resolveAnnotations(events), [])
+    assert.equal(buildProvenanceView(events).actualReported, undefined)
+  })
+
+  it('压缩剪枝事件触发 reconstructed 标注，三态不受影响', async () => {
+    const { resolveAnnotations } = await import('../services/contextProvenance')
+    const events = [
+      ev({ nodeId: 'a1', usage: { input: 14000 } }),
+      ev({ nodeId: 'p1', type: 'context_pruned', reclaimedTokens: 4000 }),
+    ]
+    const watermark: ContextWatermark = { ...DEFAULT_CONTEXT_WATERMARK, provenance: 'live' }
+
+    assert.equal(watermark.provenance, 'live')
+    assert.deepEqual(resolveAnnotations(events), ['actualReported', 'reconstructed'])
   })
 })
 

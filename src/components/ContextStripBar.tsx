@@ -1,13 +1,19 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { Info, Eye, Zap } from 'lucide-react'
 import {
   type ContextWatermark,
   type PrunableItem,
+  type TelemetryEvent,
   DEFAULT_CONTEXT_WATERMARK,
   formatTokens,
 } from '../types/telemetry'
 import type { WalStats } from '../hooks/useWalStats'
 import { FALLBACK_CONTEXT_WINDOW } from '../services/modelWindows'
+import {
+  PROVENANCE_BADGES,
+  ANNOTATION_BADGES,
+  buildProvenanceView,
+} from '../services/contextProvenance'
 
 export interface ContextStripBarProps {
   watermark: ContextWatermark
@@ -18,27 +24,8 @@ export interface ContextStripBarProps {
   isInspectorOpen?: boolean
   walStats?: WalStats | null
   isWalOffline?: boolean
-}
-
-const PROVENANCE_BADGES: Record<
-  'counted' | 'estimated' | 'live',
-  { label: string; cls: string; title: string }
-> = {
-  counted: {
-    label: '实测 Counted',
-    cls: 'bg-emerald-50 border-emerald-200 text-emerald-700',
-    title: '来自真实 usage（JSONL 的 message.usage）',
-  },
-  estimated: {
-    label: '估算 Estimated',
-    cls: 'bg-amber-50 border-amber-300 text-amber-800',
-    title: '该会话 JSONL 未记录 usage，Token 按字符量启发式粗估',
-  },
-  live: {
-    label: '实时 Live',
-    cls: 'bg-indigo-50 border-indigo-300 text-indigo-800',
-    title: '由实时流增量与手势启发式推算，非真实 usage',
-  },
+  /** 事件流是正交标注与实际 usage 的唯一真相源 */
+  events?: TelemetryEvent[]
 }
 
 export const ContextStripBar: React.FC<ContextStripBarProps> = ({
@@ -50,10 +37,12 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
   isInspectorOpen = false,
   walStats,
   isWalOffline,
+  events,
 }) => {
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null)
 
   const provenanceBadge = watermark.provenance ? PROVENANCE_BADGES[watermark.provenance] : null
+  const provenanceView = useMemo(() => buildProvenanceView(events ?? []), [events])
 
   // 1. 全维真实上下文提取与兼容降级
   const totalLimit = watermark.maxCapacity || watermark.totalLimit || FALLBACK_CONTEXT_WINDOW
@@ -120,12 +109,26 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
           {/* 来源徽标 */}
           {provenanceBadge && (
             <span
-              className={`px-1.5 py-0.5 rounded border text-[10px] font-mono ${provenanceBadge.cls}`}
+              className={`px-1.5 py-0.5 rounded border text-[10px] font-mono ${provenanceBadge.cls} ${provenanceBadge.borderCls}`}
               title={provenanceBadge.title}
             >
               {provenanceBadge.label}
             </span>
           )}
+
+          {/* 正交标注：与三态并列，不改写 provenance */}
+          {provenanceView.annotations.map((annotation) => {
+            const badge = ANNOTATION_BADGES[annotation]
+            return (
+              <span
+                key={annotation}
+                className={`px-1.5 py-0.5 rounded border text-[10px] font-mono ${badge.cls} ${badge.borderCls}`}
+                title={badge.title}
+              >
+                {badge.label}
+              </span>
+            )
+          })}
 
           {/* Token 总体指标 */}
           <div className="font-mono text-xs text-[#5E6573] flex items-center space-x-1.5">
@@ -167,6 +170,17 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
               <Zap className="w-3 h-3 text-amber-600 fill-amber-500" />
               <span>Cache: {formatTokens(cacheRead)}</span>
             </div>
+          )}
+
+          {/* 估算值 / 服务商实际值并列，口径不同不可互相替代 */}
+          {provenanceView.actualReported && (
+            <span
+              className="text-[10px] font-mono text-[#5E6573] whitespace-nowrap"
+              title="窗口装配值来自会话水位，服务商实际 Input 来自 message.usage，两者口径不同"
+            >
+              窗口装配 {formatTokens(totalUsed)} · 实际 Input{' '}
+              {formatTokens(provenanceView.actualReported.input)}
+            </span>
           )}
 
           {/* 估算 / 实时推算极简提示 */}
