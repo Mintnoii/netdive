@@ -248,9 +248,10 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
         {/* 内容区：三段卡片节奏 */}
         <div className="min-h-0 flex flex-col gap-3.5 px-5 pb-3">
           {/* 第 1 段：顶部大盘 (Top Overview) */}
-          <div className="shrink-0 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
+          <div className="shrink-0 -mx-5 flex flex-col">
+            {/* 标题行（单行，右侧对齐） */}
+            <div className="shrink-0 px-5 pt-1 pb-2 flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 <div className="p-0.5 rounded bg-violet-50 text-violet-700 shrink-0">
                   <Layers className="w-3.5 h-3.5" />
                 </div>
@@ -268,108 +269,106 @@ export const ContextInspectorDrawer: React.FC<ContextInspectorDrawerProps> = ({
                     <span>{provenanceBadge.label}</span>
                   </span>
                 )}
+              </div>
+
+              <div className="flex-1" />
+
+              <div className="flex items-center gap-2 shrink-0">
                 {(sessionTitle || sessionId) && (
-                  <span className="text-[11px] font-mono text-[#A8A29E] truncate max-w-[160px]">
+                  <span className="text-[11px] font-mono text-[#A8A29E] truncate max-w-[260px]">
                     {sessionTitle || sessionId}
                   </span>
                 )}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="p-1.5 rounded-md text-[#8F887D] hover:text-[#1E2024] hover:bg-[#EAE5DC] transition-colors cursor-pointer shrink-0"
+                  title="收起抽屉 (Esc)"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-
-              <button
-                type="button"
-                onClick={onClose}
-                className="p-1.5 rounded-md text-[#8F887D] hover:text-[#1E2024] hover:bg-[#EAE5DC] transition-colors cursor-pointer shrink-0"
-                title="收起抽屉 (Esc)"
-              >
-                <X className="w-4 h-4" />
-              </button>
             </div>
 
-            <div className="flex items-end justify-between gap-6">
-              {/* 大盘指标块 (.facts 风格：四格分别「已用 / 窗口上限 / 剩余 / 压缩机会」) */}
-              <div className="flex items-end gap-8 pt-2 border-t border-[#EFEAE2]">
+            {/* 指标区（五格统一骨架 + 贯通分隔线） */}
+            <div className="shrink-0 mx-5 pt-2.5 pb-2 border-t border-[#EFEAE2]">
+              <div className="grid grid-cols-[max-content_max-content_max-content_max-content_minmax(0,1fr)] items-end gap-x-10">
                 {/* 格 1: 已用 */}
-                <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[#8F887D]">
-                    已用 ({usagePercent}%)
+                <div className="flex flex-col">
+                  <span className="text-[11px] leading-none text-[#8F887D]">已用</span>
+                  <span className="mt-1.5 text-base font-semibold leading-none text-[#1E2024]">
+                    {formatTokens(totalUsed)}
                   </span>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-xl font-semibold text-[#1E2024]">
-                      {formatTokens(totalUsed)}
-                    </span>
-                    {(watermark.provenance === 'estimated' || watermark.provenance === 'live') && (
-                      <span className="text-[10px] text-[#8F887D]">推算值</span>
-                    )}
-                  </div>
+                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                    占窗口 {usagePercent}%
+                    {(watermark.provenance === 'estimated' || watermark.provenance === 'live') && ' · 推算值'}
+                  </span>
                 </div>
 
                 {/* 格 2: 窗口上限 */}
-                <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[#8F887D]">窗口上限</span>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-[13px] font-semibold text-[#1E2024]">
-                      {formatTokens(maxCapacity)}
-                    </span>
-                    {watermark.windowSource === 'default' && (
-                      <span className="text-[10px] text-[#8F887D]" title="按 200k 兜底">
-                        (兜底)
-                      </span>
-                    )}
-                  </div>
+                <div className="flex flex-col">
+                  <span className="text-[11px] leading-none text-[#8F887D]">窗口上限</span>
+                  <span className="mt-1.5 text-[13px] font-semibold leading-none text-[#1E2024]">
+                    {formatTokens(maxCapacity)}
+                  </span>
+                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                    {watermark.windowSource === 'default' ? '未知模型 · 按 200k 兜底' : '模型规则表判定'}
+                  </span>
                 </div>
 
                 {/* 格 3: 剩余 */}
-                <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[#8F887D]">剩余</span>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-[13px] font-semibold text-[#1E2024]">
-                      {formatTokens(remainingTokens)}
-                    </span>
-                  </div>
+                <div className="flex flex-col">
+                  <span className="text-[11px] leading-none text-[#8F887D]">剩余</span>
+                  <span className="mt-1.5 text-[13px] font-semibold leading-none text-[#1E2024]">
+                    {formatTokens(remainingTokens)}
+                  </span>
+                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                    占窗口 {100 - usagePercent}%
+                  </span>
                 </div>
 
                 {/* 格 4: 压缩机会 */}
-                <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[#8F887D]">压缩机会</span>
-                  <div className="flex items-center gap-2">
-                    <div className="flex flex-col">
-                      <span className="text-[13px] font-semibold text-[#1E2024]">
-                        可折叠 {analysis.hitCount} 条
-                      </span>
-                      <span className="text-[10px] text-[#A8A29E] whitespace-nowrap">
-                        预计释放 {formatTokens(analysis.totalReclaimedChars)} 字符
-                        {walStats.isOffline
-                          ? ' · bridge 未连接'
-                          : walStats.stats
-                          ? ` · bridge 已折叠 ${walStats.stats.totalEntries} 条 / ${formatTokens(walStats.stats.totalReclaimedChars)} 字符`
-                          : ''}
-                      </span>
-                    </div>
+                <div className="flex flex-col">
+                  <span className="text-[11px] leading-none text-[#8F887D]">压缩机会</span>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <span className="text-[13px] font-semibold leading-none text-[#1E2024]">
+                      {analysis.hitCount} 条
+                    </span>
                     <button
                       type="button"
                       onClick={() => setIsPreviewOverlayOpen(true)}
-                      className="h-6 px-2 text-[11px] rounded-md border border-[#DCD5C9] bg-white hover:border-[#B5AFA4] cursor-pointer shrink-0"
+                      className="h-5 px-1.5 rounded text-[10px] border border-[#DCD5C9] bg-white text-[#5E6573] hover:border-[#B5AFA4] cursor-pointer shrink-0"
                     >
                       查看预演
                     </button>
                   </div>
+                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                    预计释放 {formatTokens(analysis.totalReclaimedChars)} 字符
+                    {walStats.isOffline
+                      ? ' · bridge 未连接'
+                      : walStats.stats
+                      ? ` · bridge 已折叠 ${walStats.stats.totalEntries} 条 / ${formatTokens(walStats.stats.totalReclaimedChars)} 字符`
+                      : ''}
+                  </span>
                 </div>
-              </div>
 
-              {/* Cache 块 */}
-              <div className="pt-2.5 border-t border-[#EFEAE2] flex flex-col gap-1 items-end w-full max-w-[280px]">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-[11px] text-[#8F887D]">提示词缓存</span>
-                  <span className="text-[13px] font-semibold text-[#1E2024]">{cacheHitRate}% 命中</span>
-                </div>
-                <div className="h-1 w-full max-w-[280px] rounded-full bg-[#ECE8E1] overflow-hidden">
-                  <div
-                    style={{ width: `${Math.min(100, Math.max(0, cacheHitRate))}%` }}
-                    className="h-full bg-amber-500 rounded-full"
-                  />
-                </div>
-                <div className="text-[10px] text-[#A8A29E]">
-                  {formatTokens(cacheReadTokens)} 来自缓存 · {formatTokens(totalUsed)} 新增
+                {/* 格 5: 提示词缓存 */}
+                <div className="flex flex-col justify-self-end min-w-[240px]">
+                  <span className="text-[11px] leading-none text-[#8F887D]">提示词缓存</span>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <span className="text-[13px] font-semibold leading-none text-[#1E2024]">
+                      {cacheHitRate}% 命中
+                    </span>
+                    <div className="h-1 w-[140px] rounded-full bg-[#ECE8E1] overflow-hidden shrink-0">
+                      <div
+                        style={{ width: `${Math.min(100, Math.max(0, cacheHitRate))}%` }}
+                        className="h-full bg-amber-500 rounded-full"
+                      />
+                    </div>
+                  </div>
+                  <span className="mt-1 text-[10px] leading-none text-[#A8A29E] truncate">
+                    {formatTokens(cacheReadTokens)} 来自缓存 · {formatTokens(totalUsed)} 新增
+                  </span>
                 </div>
               </div>
             </div>
