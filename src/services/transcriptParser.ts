@@ -33,7 +33,7 @@ export type {
   ContextPrompt,
 }
 import { normalizeObservationOutput } from '../types/telemetry'
-import type { AgentNodeData } from '../components/AgentNode'
+import { AGENT_NODE_WIDTH, type AgentNodeData } from '../components/AgentNode'
 import { extractRealIntent } from './agentNodeLOD'
 export { extractRealIntent } from './agentNodeLOD'
 import { resolveContextWindow, effectiveContextWindow } from './modelWindows'
@@ -1866,6 +1866,9 @@ export function eventsToFlowNodesAndEdges(
       isCorrectionBranch: ev.isCorrectionBranch,
       isAggregated: ev.isAggregated,
       aggregateCount: ev.aggregateCount,
+      pruned: ev.pruned,
+      reclaimedTokens: ev.reclaimedTokens || (ev.payload?.reclaimedTokens as number | undefined),
+      walPointerId: (ev.payload?.walPointerId as string) || (ev.payload?.pointerId as string) || undefined,
       prunableTokens: toolTokens || undefined,
     }
 
@@ -1874,13 +1877,17 @@ export function eventsToFlowNodesAndEdges(
       type: 'agentNode',
       position: { x: posX, y: posY },
       data: nodeData,
+      width: AGENT_NODE_WIDTH,
+      height: 140,
+      initialWidth: AGENT_NODE_WIDTH,
+      initialHeight: 140,
     }
 
     nodes.push(node)
     nodeMap.set(ev.nodeId, node)
 
-    // 构建因果边
-    if (ev.parentId && nodeMap.has(ev.parentId)) {
+    // 构建因果边 (严格校验首尾节点均在当前集合中存在，杜绝悬空边与多余残留)
+    if (ev.parentId && nodeMap.has(ev.parentId) && nodeMap.has(ev.nodeId)) {
       const isBranchEdge = Boolean(
         ev.isCorrectionBranch || (parentNode?.data as unknown as AgentNodeData)?.isCorrectionBranch
       )
@@ -2256,6 +2263,10 @@ export function turnsToFlowNodesAndEdges(
         id: turn.turnId,
         type: 'turnNode',
         position: { x: currentX, y: currentY },
+        width: nodeWidth,
+        height: 120,
+        initialWidth: nodeWidth,
+        initialHeight: 120,
         data: {
           ...turn,
           isExpanded,

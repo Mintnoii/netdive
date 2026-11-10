@@ -337,6 +337,7 @@ export interface TelemetryEvent {
   gatePayload?: GatePromptPayload
   gateDecision?: GateDecision
   isCorrectionBranch?: boolean
+  pruned?: boolean
   assertion?: AssertionResult
   timestamp?: number
   watermark?: ContextWatermark

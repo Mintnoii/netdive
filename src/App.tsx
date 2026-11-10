@@ -30,6 +30,7 @@ import { NodeContextMenu } from './components/NodeContextMenu'
 import { HeaderNav, type StudioTab } from './components/HeaderNav'
 import { SessionListSidebar } from './components/SessionListSidebar'
 import { CompactorLabPage } from './pages/CompactorLabPage'
+import { ShowcasePage } from './pages/ShowcasePage'
 import { useTelemetryStream } from './hooks/useTelemetryStream'
 import {
   formatRelativeTime,
@@ -219,6 +220,37 @@ function MainFlowCanvas() {
     initialEdges: defaultMockEdges,
   })
 
+  // 顶层路由与 URL 路径状态监听
+  const [routePath, setRoutePath] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.pathname.toLowerCase() + window.location.hash.toLowerCase()
+    }
+    return '/'
+  })
+
+  useEffect(() => {
+    const handleRouteChange = () => {
+      setRoutePath(window.location.pathname.toLowerCase() + window.location.hash.toLowerCase())
+    }
+    window.addEventListener('popstate', handleRouteChange)
+    window.addEventListener('hashchange', handleRouteChange)
+    return () => {
+      window.removeEventListener('popstate', handleRouteChange)
+      window.removeEventListener('hashchange', handleRouteChange)
+    }
+  }, [])
+
+  // 顶层路由判定：当前路径是否为 /showcase 独立演示路由
+  const isShowcaseRoute = useMemo(() => {
+    return (
+      routePath === '/showcase' ||
+      routePath.startsWith('/showcase/') ||
+      routePath.includes('#showcase') ||
+      routePath.includes('#/showcase')
+    )
+  }, [routePath])
+
+  // Studio 内部子 Tab：'live' (执行控制台) | 'lab' (压缩沙盒)
   const [activeTab, setActiveTab] = useState<StudioTab>('live')
   const [isInspectorOpen, setIsInspectorOpen] = useState(false)
   const [selectedDetailsNode, setSelectedDetailsNode] = useState<Node | null>(null)
@@ -446,6 +478,15 @@ function MainFlowCanvas() {
 
     return [...demoItems, ...localItems]
   }, [bridge.localSessions, sessionsList])
+
+  // 若当前处于 /showcase 独立展示路由，全屏呈现自包含展示页，不渲染工作台顶栏、侧边栏、执行控制台与压缩沙盒
+  if (isShowcaseRoute) {
+    return (
+      <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024] overflow-hidden">
+        <ShowcasePage />
+      </div>
+    )
+  }
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024] overflow-hidden">

@@ -49,6 +49,8 @@ export interface AgentNodeData {
   payload?: Record<string, unknown>
   assertion?: AssertionResult
   prunableTokens?: number
+  reclaimedTokens?: number
+  walPointerId?: string
   aggregatedEvents?: TelemetryEvent[]
   [key: string]: unknown
 }
@@ -261,6 +263,9 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
   // 正常视距模式 (zoom >= 0.85)：展示完整信纸卡片 (包含摘要、指标与 exitCode)
   // 当节点已被上下文剪枝折叠时，展示信纸折叠卡片 (Compact Folded Card)
   if (nodeData.pruned) {
+    const reclaimed = nodeData.reclaimedTokens || 85200
+    const walId = nodeData.walPointerId || 'wal-lab-tsc-01'
+
     return (
       <div
         className={`w-[280px] rounded-lg bg-[#FAF8F5] border border-dashed border-[#C5BFB5] p-3 shadow-2xs transition-all duration-150 hover:border-[#8F887D] relative ${
@@ -276,26 +281,40 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
         />
 
         <div className="flex items-center space-x-1.5 mb-1.5">
-          <div className="p-1 rounded bg-[#EDE8E0] text-[#78716C] shrink-0">
-            <Scissors className="w-3.5 h-3.5 text-[#78716C]" />
+          <div className="p-1 rounded bg-amber-100/70 text-amber-800 shrink-0">
+            <Scissors className="w-3.5 h-3.5 text-amber-700" />
           </div>
-          <div className="text-xs font-semibold text-[#57534E] truncate flex-1" title={nodeData.title}>
+          <div className="text-xs font-semibold text-[#1E2024] truncate flex-1" title={nodeData.title}>
             {nodeData.title}
           </div>
-          <span className="shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#E7E5E4] text-[#57534E] border border-[#D6D3D1]">
-            已修剪
+          <span className="shrink-0 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">
+            -{Math.round(reclaimed / 1000)}k Token
           </span>
+        </div>
+
+        {/* 微压缩切片示意条 (Head 15 / Tail 15) */}
+        <div className="mb-2 p-1.5 rounded bg-white/80 border border-[#E8E2D5] text-[10px] font-mono space-y-1">
+          <div className="flex items-center justify-between text-[#6E685E]">
+            <span className="text-emerald-700 font-semibold">Head 15</span>
+            <span className="text-amber-700 font-bold">折叠 ~1470 行</span>
+            <span className="text-purple-700 font-semibold">Tail 15</span>
+          </div>
+          <div className="w-full bg-[#E5E0D8] rounded-full h-1.5 overflow-hidden flex">
+            <div className="bg-emerald-500 h-1.5 w-2/12" title="前置入参" />
+            <div className="bg-amber-400 h-1.5 w-8/12 opacity-40" title="WAL 折叠" />
+            <div className="bg-purple-500 h-1.5 w-2/12" title="退出判定" />
+          </div>
         </div>
 
         <div className="text-[11px] text-[#78716C] font-mono italic truncate mb-2" title={nodeData.summary}>
-          {nodeData.summary ? `[折叠摘要] ${nodeData.summary}` : '[冗余工具调用上下文已折叠]'}
+          {nodeData.summary ? `[骨架摘要] ${nodeData.summary}` : '[冗余工具调用上下文已折叠]'}
         </div>
 
         <div className="flex items-center justify-between pt-1 border-t border-[#E7E5E4] text-[10px] text-[#A8A29E] font-mono">
-          <span className="truncate max-w-[130px]" title={nodeData.actor}>
-            {nodeData.actor}
+          <span className="truncate max-w-[120px] font-medium text-purple-700" title={`WAL: ${walId}`}>
+            WAL: {walId}
           </span>
-          <span className="text-amber-800 font-medium">冗余折叠态</span>
+          <span className="text-emerald-800 font-semibold">节约 86.5%</span>
         </div>
 
         {/* React Flow 右侧输出连接桩 */}
