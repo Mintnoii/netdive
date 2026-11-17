@@ -7,7 +7,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { GatePromptPayload } from '../types/telemetry'
-import { DEFAULT_GATE_TIMEOUT_MS, GateManager } from './gateManager'
+import { DEFAULT_GATE_TIMEOUT_MS, detachTimer, GateManager } from './gateManager'
 
 /** 构造门禁载荷 */
 function gatePayload(gateId: string): GatePromptPayload {
@@ -65,7 +65,8 @@ describe('GateManager 状态机契约', () => {
   })
 
   it('兜底超时触发安全拦截，绝不无限挂起', async () => {
-    const manager = new GateManager(80)
+    // 纯逻辑测试无外部 handle 保活显式开 keepAlive，让短超时 timer 触发
+    const manager = new GateManager(80, true)
     const decision = await manager.registerGate(gatePayload('g-timeout'))
 
     assert.equal(decision.action, 'reject')
@@ -107,6 +108,14 @@ describe('GateManager 状态机契约', () => {
 
   it('默认超时为 5 分钟', () => {
     assert.equal(DEFAULT_GATE_TIMEOUT_MS, 300_000)
+  })
+
+  it('兜底定时器 unref 后不再保活事件循环，残留门禁不会挂死进程', () => {
+    const timer = setTimeout(() => {}, 60_000)
+    assert.equal(timer.hasRef(), true, 'unref 前定时器计入事件循环保活句柄')
+    detachTimer(timer)
+    assert.equal(timer.hasRef(), false, 'unref 后定时器不再阻止进程退出')
+    clearTimeout(timer)
   })
 
   it('超时定时器在正常裁决后不再触发', async () => {

@@ -42,6 +42,19 @@ interface PendingGateEntry {
 export const DEFAULT_GATE_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
+ * 让兜底超时定时器脱离事件循环保活。
+ * Node 下 unref 使无人裁决的残留 timer 不再阻塞进程退出（测试 runner 才不会被挂死）；
+ * 浏览器端 setTimeout 返回 number 无此方法，可选链安全跳过。
+ *
+ * @example
+ * detachTimer(setTimeout(fn, 5 * 60 * 1000)) // Node: timer 不再保活；浏览器: 无操作
+ */
+export function detachTimer(timer: ReturnType<typeof setTimeout> | undefined): void {
+  const nodeTimer = timer as { unref?: () => void } | undefined
+  nodeTimer?.unref?.()
+}
+
+/**
  * NetDive 决策门禁管理器 (Human-in-the-Loop Gate Manager)
  * 纯 Promise 挂起协程机制，无额外状态机胶水，实现主干拓扑的流式挂起与热纠偏放行
  */
@@ -50,9 +63,12 @@ export class GateManager {
   private listeners = new Set<() => void>()
 
   private readonly timeoutMs: number
+  /** 兜底 timer 是否保活进程。生产默认 false 防残留挂死；纯逻辑超时测试显式开 true 保证 timer 触发 */
+  private readonly keepAlive: boolean
 
-  constructor(timeoutMs: number = DEFAULT_GATE_TIMEOUT_MS) {
+  constructor(timeoutMs: number = DEFAULT_GATE_TIMEOUT_MS, keepAlive = false) {
     this.timeoutMs = timeoutMs
+    this.keepAlive = keepAlive
   }
 
   /**
@@ -76,6 +92,7 @@ export class GateManager {
         : undefined
 
     this.pending.set(payload.gateId, { payload, resolvers, timer })
+    if (timer && !this.keepAlive) detachTimer(timer)
     this.notify()
 
     resolvers.promise.finally(() => {
