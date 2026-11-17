@@ -3,6 +3,7 @@
  * 契约驱动的流式拓扑数据契约
  */
 import type { Node } from '@xyflow/react'
+import { tryit , isString } from 'radash'
 
 /** 节点手势动作类型 */
 export type TelemetryGesture =
@@ -194,6 +195,8 @@ export interface PrunableItem {
 export interface GatePromptPayload {
   gateId: string
   title: string
+  /** 演示专用标记：为 true 时仅用于沙盒演示，绝不并入真实活跃会话与真实断言状态 */
+  demoOnly?: boolean
   riskLevel: 'high' | 'critical'
   proposedAction: {
     command: string
@@ -231,12 +234,12 @@ export interface TelemetryObservation {
 
 /** 单项元素原子转文本原语 */
 function extractItemToString(item: unknown): string {
-  if (typeof item === 'string') return item
+  if (isString(item)) return item
   if (item && typeof item === 'object') {
     const obj = item as Record<string, unknown>
-    if (typeof obj.text === 'string') return obj.text
-    if (typeof obj.content === 'string') return obj.content
-    if (typeof obj.message === 'string') return obj.message
+    if (isString(obj.text)) return obj.text
+    if (isString(obj.content)) return obj.content
+    if (isString(obj.message)) return obj.message
     return JSON.stringify(item)
   }
   return item !== undefined && item !== null ? String(item) : ''
@@ -267,7 +270,7 @@ export function normalizeTelemetryObservation(
   const exitCode =
     typeof obs.exitCode === 'number'
       ? obs.exitCode
-      : typeof obs.exitCode === 'string' && !isNaN(Number(obs.exitCode))
+      : isString(obs.exitCode) && !isNaN(Number(obs.exitCode))
         ? Number(obs.exitCode)
         : undefined
 
@@ -275,9 +278,9 @@ export function normalizeTelemetryObservation(
     ...obs,
     exitCode,
     output: normalizeObservationOutput(obs.output),
-    pointerId: typeof obs.pointerId === 'string' ? obs.pointerId : undefined,
-    compactSummary: typeof obs.compactSummary === 'string' ? obs.compactSummary : undefined,
-    command: typeof obs.command === 'string' ? obs.command : undefined,
+    pointerId: isString(obs.pointerId) ? obs.pointerId : undefined,
+    compactSummary: isString(obs.compactSummary) ? obs.compactSummary : undefined,
+    command: isString(obs.command) ? obs.command : undefined,
   }
 }
 
@@ -294,7 +297,7 @@ export interface ContextPrunedPayload {
  */
 export function formatNodeSummary(summary: unknown): string {
   if (summary === null || summary === undefined) return ''
-  if (typeof summary === 'string') return summary
+  if (isString(summary)) return summary
   if (typeof summary === 'number' || typeof summary === 'boolean') return String(summary)
 
   if (Array.isArray(summary)) {
@@ -306,13 +309,13 @@ export function formatNodeSummary(summary: unknown): string {
 
   if (typeof summary === 'object') {
     const obj = summary as Record<string, unknown>
-    if (typeof obj.text === 'string') return obj.text
-    if (typeof obj.summary === 'string') return obj.summary
-    if (typeof obj.plan === 'string') return obj.plan
-    if (typeof obj.content === 'string') return obj.content
-    if (typeof obj.message === 'string') return obj.message
-    if (typeof obj.command === 'string') return `$ ${obj.command}`
-    if (typeof obj.path === 'string') return `文件: ${obj.path}`
+    if (isString(obj.text)) return obj.text
+    if (isString(obj.summary)) return obj.summary
+    if (isString(obj.plan)) return obj.plan
+    if (isString(obj.content)) return obj.content
+    if (isString(obj.message)) return obj.message
+    if (isString(obj.command)) return `$ ${obj.command}`
+    if (isString(obj.path)) return `文件: ${obj.path}`
     return JSON.stringify(summary, null, 2)
   }
 
@@ -351,6 +354,8 @@ export interface TelemetryEvent {
   isAggregated?: boolean
   aggregateCount?: number
   aggregatedEvents?: TelemetryEvent[]
+  /** 演示专用标记：为 true 时旁路 L1 断言状态并隔离到 demo- 会话，绝不影响真实活跃会话 */
+  demoOnly?: boolean
   traceId?: string // 可选向后兼容别名
   usage?: {
     input?: number
@@ -360,6 +365,26 @@ export interface TelemetryEvent {
     total?: number
   }
   tokenBreakdown?: TurnTokenBreakdown
+}
+
+/** 演示会话统一前缀，演示流的会话 ID 一律强制加此前缀以实现物理隔离 */
+export const DEMO_SESSION_PREFIX = 'demo-'
+
+/**
+ * 将任意会话 ID 幂等隔离到 demo- 命名空间
+ *
+ * @example
+ * toDemoIsolatedSessionId('session-a1b2')
+ * // => 'demo-session-a1b2'
+ *
+ * @example
+ * toDemoIsolatedSessionId('demo-session')
+ * // => 'demo-session'
+ */
+export function toDemoIsolatedSessionId(sessionId?: string): string {
+  const raw = (sessionId || '').trim()
+  const base = raw.length > 0 ? raw : 'default-session'
+  return base.startsWith(DEMO_SESSION_PREFIX) ? base : `${DEMO_SESSION_PREFIX}${base}`
 }
 
 /** 会话列表项契约 (Master-Detail 视图数据模型) */
@@ -496,6 +521,46 @@ export function calculateContextMenuPosition(
 }
 
 /**
+ * 剪贴板写入单一原语：Navigator Clipboard 优先，DOM execCommand 兜底
+ * 全仓任何复制场景只允许走这一个入口，杜绝多头实现
+ *
+ * @example
+ * await writeClipboard('hello') // => true
+ */
+export async function writeClipboard(
+  text: string,
+  clipboard?: { writeText: (text: string) => Promise<void> }
+): Promise<boolean> {
+  const targetClipboard =
+    clipboard ?? (typeof navigator !== 'undefined' ? navigator.clipboard : undefined)
+
+  if (targetClipboard?.writeText) {
+    const [nativeErr] = await tryit(async () => {
+      await targetClipboard.writeText(text)
+    })()
+    if (!nativeErr) return true
+  }
+
+  // 降级为 DOM textarea execCommand（测试或非 HTTPS 环境）
+  if (typeof document === 'undefined') return false
+
+  const [domErr, succeeded] = await tryit(async () => {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    return ok
+  })()
+
+  return domErr ? false : Boolean(succeeded)
+}
+
+/**
  * 复制节点引用到剪贴板核心逻辑 (兼容 Navigator Clipboard 与安全 DOM Fallback)
  */
 export async function copyNodeReferenceToClipboard(params: {
@@ -513,36 +578,8 @@ export async function copyNodeReferenceToClipboard(params: {
     project,
   })
 
-  // 1. 优先使用注入或原生 navigator.clipboard
-  const targetClipboard = clipboard ?? (typeof navigator !== 'undefined' ? navigator.clipboard : undefined)
-  if (targetClipboard?.writeText) {
-    try {
-      await targetClipboard.writeText(text)
-      return { success: true, text }
-    } catch {
-      // 降级进入 fallback
-    }
-  }
-
-  // 2. 降级为 DOM textarea execCommand fallback (测试/非 HTTPS 环境)
-  if (typeof document !== 'undefined') {
-    try {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      textarea.style.left = '-9999px'
-      document.body.appendChild(textarea)
-      textarea.select()
-      const succeeded = document.execCommand('copy')
-      document.body.removeChild(textarea)
-      return { success: succeeded, text }
-    } catch {
-      return { success: false, text }
-    }
-  }
-
-  return { success: false, text }
+  const success = await writeClipboard(text, clipboard)
+  return { success, text }
 }
 
 /**
@@ -574,7 +611,7 @@ export function formatSessionDiagnosticMarkdown(params: {
     gestureCounts[gesture] = (gestureCounts[gesture] || 0) + 1
     if (d?.status === 'failed') failedCount += 1
     if (d?.status === 'gate') hasGate = true
-    if (d?.summary && typeof d.summary === 'string') {
+    if (d?.summary && isString(d.summary)) {
       lastActionSummary = d.summary
     }
   }
@@ -606,36 +643,8 @@ export async function copySessionDiagnosticToClipboard(params: {
   clipboard?: { writeText: (text: string) => Promise<void> }
 }): Promise<{ success: boolean; text: string }> {
   const text = formatSessionDiagnosticMarkdown(params)
-
-  const targetClipboard =
-    params.clipboard ?? (typeof navigator !== 'undefined' ? navigator.clipboard : undefined)
-  if (targetClipboard?.writeText) {
-    try {
-      await targetClipboard.writeText(text)
-      return { success: true, text }
-    } catch {
-      // 降级进入 fallback
-    }
-  }
-
-  if (typeof document !== 'undefined') {
-    try {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      textarea.style.left = '-9999px'
-      document.body.appendChild(textarea)
-      textarea.select()
-      const succeeded = document.execCommand('copy')
-      document.body.removeChild(textarea)
-      return { success: succeeded, text }
-    } catch {
-      return { success: false, text }
-    }
-  }
-
-  return { success: false, text }
+  const success = await writeClipboard(text, params.clipboard)
+  return { success, text }
 }
 
 /** 宏观回合生命周期状态 */

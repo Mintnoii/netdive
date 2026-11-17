@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
-import { tryit } from 'radash'
-import { DEFAULT_BRIDGE_HTTP_URL } from '../hooks/useBridgeConnection'
+import { DEFAULT_BRIDGE_HTTP_URL } from '../config/bridge'
+import { httpText } from '../utils/http'
 import type { CompactionOpportunity } from '../services/compactionOpportunities'
 import type { WalStats } from '../hooks/useWalStats'
 import { formatTokens } from '../types/telemetry'
@@ -66,16 +66,12 @@ export const CompactionPreviewOverlay: React.FC<CompactionPreviewOverlayProps> =
     setReplayLoading(true)
     setReplayError(null)
 
-    const [err, text] = await tryit(async () => {
-      const res = await fetch(`${DEFAULT_BRIDGE_HTTP_URL}/api/wal/${encodeURIComponent(pointerId)}/replay`)
-      if (!res.ok) {
-        throw new Error(`回放失败: HTTP ${res.status}`)
-      }
-      return await res.text()
-    })()
+    const [err, text] = await httpText(
+      `${DEFAULT_BRIDGE_HTTP_URL}/api/wal/${encodeURIComponent(pointerId)}/replay`
+    )
 
     setReplayLoading(false)
-    if (err || text === undefined) {
+    if (err || text === null) {
       setReplayError('回放失败：未找到对应的 WAL 记录或 bridge 连接异常')
       setReplayText(null)
     } else {

@@ -1,11 +1,31 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { tryit , isString } from 'radash'
 import type {
   GateDecision,
   GatePromptPayload,
   TelemetryEvent,
 } from '../types/telemetry'
+import {
+  DEFAULT_BRIDGE_HTTP_URL,
+  DEFAULT_BRIDGE_WS_URL,
+} from '../config/bridge'
+import { httpJson, httpPostSilent, httpText } from '../utils/http'
+
+export { DEFAULT_BRIDGE_HTTP_URL, DEFAULT_BRIDGE_WS_URL }
 
 export type BridgeConnectionStatus = 'connected' | 'connecting' | 'disconnected'
+
+/**
+ * WebSocket 下行帧统一契约（拓扑事件与门禁信令共用同一信封）
+ * type 放宽为 string：信令帧（bridge_connected 等）不属于 TelemetryEventType
+ */
+type BridgeFrame = Omit<Partial<TelemetryEvent>, 'type'> & {
+  type?: string
+  gateId?: string
+  gatePayload?: GatePromptPayload
+  gateDecision?: GateDecision
+  pendingGates?: GatePromptPayload[]
+}
 
 export interface UseBridgeConnectionOptions {
   wsUrl?: string
@@ -44,10 +64,6 @@ export interface UseBridgeConnectionReturn {
   reconnect: () => void
 }
 
-/** 桥接服务 WebSocket 地址（默认本地 Sidecar） */
-export const DEFAULT_BRIDGE_WS_URL = 'ws://127.0.0.1:4560/ws'
-/** 桥接服务 HTTP 基址（默认本地 Sidecar），供 /api/* 端点复用 */
-export const DEFAULT_BRIDGE_HTTP_URL = 'http://127.0.0.1:4560'
 const DEFAULT_WS_URL = DEFAULT_BRIDGE_WS_URL
 const DEFAULT_HTTP_URL = DEFAULT_BRIDGE_HTTP_URL
 const DEFAULT_RECONNECT_INTERVAL_MS = 3000
@@ -116,7 +132,7 @@ export function useBridgeConnection(
       }
       isManuallyClosedRef.current = false
 
-      try {
+      {
         const socket = new WebSocket(wsUrl)
         wsRef.current = socket
 
@@ -125,45 +141,51 @@ export function useBridgeConnection(
         }
 
         socket.onmessage = (event: MessageEvent) => {
-          try {
-            const raw = typeof event.data === 'string' ? event.data : ''
-            if (!raw.trim().startsWith('{')) return
+          const raw = isString(event.data) ? event.data : ''
+          // 非 JSON 帧（心跳 / 二进制）直接丢弃，不做异常吞没
+          if (!raw.trim().startsWith('{')) return
 
-            const data = JSON.parse(raw)
+          const [parseErr, frame] = tryit(JSON.parse)(raw) as [
+            Error | undefined,
+            BridgeFrame | undefined,
+          ]
+          if (parseErr || !frame) {
+            console.warn('[NetDive Bridge] 丢弃无法解析的消息帧:', parseErr?.message)
+            return
+          }
 
+          const { type, nodeId, gateId, gatePayload, gateDecision, pendingGates } = frame
+
+          {
             // 1. 服务端上线同步初始状态 (历史存量门禁记录于状态中，绝不主动弹出遮罩阻断用户)
-            if (data.type === 'bridge_connected') {
-              if (Array.isArray(data.pendingGates)) {
-                setPendingGates(data.pendingGates)
-              }
+            if (type === 'bridge_connected') {
+              setPendingGates(pendingGates ?? [])
               return
             }
 
             // 2. 门禁挂起事件 (HITL 审批模态窗唤醒)
-            if (data.type === 'gate_prompt') {
-              if (data.gatePayload) {
-                onGatePromptRef.current?.(data.gatePayload)
+            if (type === 'gate_prompt') {
+              if (gatePayload) {
+                onGatePromptRef.current?.(gatePayload)
               }
-              onEventRef.current?.(data as TelemetryEvent)
+              onEventRef.current?.(frame as TelemetryEvent)
               return
             }
 
             // 3. 门禁放行/拦截/热纠偏裁决事件
-            if (data.type === 'gate_resolved') {
-              const gateId = data.nodeId || data.gateId
-              if (gateId && data.gateDecision) {
-                onGateResolvedRef.current?.(gateId, data.gateDecision)
+            if (type === 'gate_resolved') {
+              const resolvedGateId = nodeId || gateId
+              if (resolvedGateId && gateDecision) {
+                onGateResolvedRef.current?.(resolvedGateId, gateDecision)
               }
-              onEventRef.current?.(data as TelemetryEvent)
+              onEventRef.current?.(frame as TelemetryEvent)
               return
             }
 
             // 4. 标准流式拓扑与系统事件 (node_start / node_stream / node_complete / context_pruned)
-            if (data.type && (data.nodeId || data.type === 'context_pruned')) {
-              onEventRef.current?.(data as TelemetryEvent)
+            if (type && (nodeId || type === 'context_pruned')) {
+              onEventRef.current?.(frame as TelemetryEvent)
             }
-          } catch {
-            // 忽略非标准或无效消息帧
           }
         }
 
@@ -176,9 +198,6 @@ export function useBridgeConnection(
           setStatus('disconnected')
           scheduleReconnect()
         }
-      } catch {
-        wsRef.current = null
-        scheduleReconnect()
       }
     }
 
@@ -201,24 +220,16 @@ export function useBridgeConnection(
    */
   const resolveGate = useCallback(
     async (gateId: string, decision: GateDecision): Promise<boolean> => {
-      try {
-        const response = await fetch(`${httpUrl}/api/gate/resolve`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ gateId, decision }),
-        })
+      const delivered = await httpPostSilent(`${httpUrl}/api/gate/resolve`, {
+        gateId,
+        decision,
+      })
 
-        if (!response.ok) {
-          console.warn(`[NetDive Bridge] Gate ${gateId} resolve rejected with status: ${response.status}`)
-          return false
-        }
-        return true
-      } catch (err) {
-        console.warn(`[NetDive Bridge] Network error resolving gate ${gateId}:`, err)
-        return false
+      if (!delivered) {
+        console.warn(`[NetDive Bridge] 门禁 ${gateId} 裁决未送达，Bridge 可能已离线`)
       }
+
+      return delivered
     },
     [httpUrl]
   )
@@ -235,19 +246,7 @@ export function useBridgeConnection(
       }
 
       // 兜底降级走 HTTP POST
-      try {
-        const response = await fetch(`${httpUrl}/api/telemetry`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(event),
-        })
-        return response.ok
-      } catch (err) {
-        console.warn('[NetDive Bridge] Network error sending telemetry:', err)
-        return false
-      }
+      return await httpPostSilent(`${httpUrl}/api/telemetry`, event)
     },
     [httpUrl]
   )
@@ -256,18 +255,17 @@ export function useBridgeConnection(
    * 拉取本地 Pi 存量会话列表 (默认扫描最近活跃的 30 条)
    */
   const fetchLocalSessions = useCallback(async (): Promise<LocalSessionEntry[]> => {
-    try {
-      const res = await fetch(`${httpUrl}/api/sessions/local?limit=30`)
-      if (!res.ok) return []
-      const data = await res.json()
-      if (data.ok && Array.isArray(data.sessions)) {
-        setLocalSessions(data.sessions)
-        return data.sessions
-      }
-      return []
-    } catch {
+    const [err, data] = await httpJson<{ ok: boolean; sessions?: LocalSessionEntry[] }>(
+      `${httpUrl}/api/sessions/local?limit=30`
+    )
+
+    if (err || !data?.ok || !data.sessions) {
+      if (err) console.warn('[NetDive Bridge] 本地会话列表拉取失败:', err.message)
       return []
     }
+
+    setLocalSessions(data.sessions)
+    return data.sessions
   }, [httpUrl])
 
   /**
@@ -275,13 +273,14 @@ export function useBridgeConnection(
    */
   const fetchSessionTranscript = useCallback(
     async (id: string): Promise<string | null> => {
-      try {
-        const res = await fetch(`${httpUrl}/api/sessions/local/${id}/transcript`)
-        if (!res.ok) return null
-        return await res.text()
-      } catch {
+      const [err, text] = await httpText(`${httpUrl}/api/sessions/local/${id}/transcript`)
+
+      if (err || text === null) {
+        if (err) console.warn(`[NetDive Bridge] 会话 ${id} 转录拉取失败:`, err.message)
         return null
       }
+
+      return text
     },
     [httpUrl]
   )

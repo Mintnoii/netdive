@@ -11,6 +11,7 @@
  */
 
 import { pathToFileURL } from 'node:url'
+import { homedir } from 'node:os'
 import { existsSync, statSync } from 'node:fs'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { tryit, sleep } from 'radash'
@@ -21,8 +22,10 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 const BRIDGE_URL = (process.env.NETDIVE_BRIDGE || 'http://127.0.0.1:4560').replace(/\/+$/, '')
 const WEB_UI_URL = 'http://localhost:5173'
 const SCREENSHOT_OUTPUT = 'public/claude-e2e-simulation-verified.png'
+// 宿主扩展路径可经 env 覆盖，默认按当前用户家目录推导，绝不写死盘符
 const HOST_EXTENSION_PATH = normalize(
-  resolve('C:/Users/wangqing/Desktop/dotagents/extensions/pi-netdive-bridge/index.ts')
+  process.env.NETDIVE_HOST_EXTENSION ||
+    resolve(homedir(), 'Desktop/dotagents/extensions/pi-netdive-bridge/index.ts')
 )
 
 /** Pi 切面监听器闭包类型 */
@@ -219,6 +222,8 @@ export async function runHostSimulation() {
   }
 
   const { pi, emit, getRegisteredEvents } = createMockPiHost()
+  // 演练场命中的是门禁拦截剧本，临时开闸（生产默认关闭，全放行不拦截）
+  process.env.NETDIVE_GATE_ENABLED = '1'
   extModule.default(pi)
   console.log(`✅ 宿主扩展挂载成功，已注册生命周期切面: [${getRegisteredEvents().join(', ')}]\n`)
 

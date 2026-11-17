@@ -1,3 +1,7 @@
+// 演练专用会话，绝不并入真实活跃会话
+const DEMO_SESSION_ID = 'demo-gate-walkthrough'
+const DEMO_SESSION_TITLE = '门禁审批端到端演练'
+
 async function runRealWorkflow() {
   const BRIDGE = 'http://127.0.0.1:4560'
   console.log('🚀 Agent 启动：开始执行真实工作流任务...\n')
@@ -10,6 +14,8 @@ async function runRealWorkflow() {
     body: JSON.stringify({
       nodeId: 'real-node-1',
       traceId: 'trace-demo-1',
+      sessionId: DEMO_SESSION_ID,
+      sessionTitle: DEMO_SESSION_TITLE,
       title: '目标拆解与安全边界分析',
       actor: 'Pi Agent (Real CLI)',
       gesture: 'think',
@@ -30,6 +36,8 @@ async function runRealWorkflow() {
       nodeId: 'real-node-2',
       parentId: 'real-node-1',
       traceId: 'trace-demo-1',
+      sessionId: DEMO_SESSION_ID,
+      sessionTitle: DEMO_SESSION_TITLE,
       title: '只读环境探测',
       actor: 'Claude Worker',
       gesture: 'bash',
@@ -57,6 +65,8 @@ async function runRealWorkflow() {
     body: JSON.stringify({
       nodeId: 'real-node-3',
       parentId: 'real-node-2',
+      sessionId: DEMO_SESSION_ID,
+      sessionTitle: DEMO_SESSION_TITLE,
       gateId: 'gate-commit-verify',
       title: '代码提交安全审查门禁 (Git Commit)',
       riskLevel: 'critical',
@@ -87,6 +97,8 @@ async function runRealWorkflow() {
         nodeId: 'real-node-4',
         parentId: 'real-node-3',
         traceId: 'trace-demo-1',
+        sessionId: DEMO_SESSION_ID,
+        sessionTitle: DEMO_SESSION_TITLE,
         title: '交付归档与演进沉淀',
         actor: 'Pi (Coordinator)',
         gesture: 'think',

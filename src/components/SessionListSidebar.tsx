@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef } from 'react'
+import { isString } from 'radash'
 import {
   FolderKanban,
   ChevronLeft,
@@ -110,7 +111,7 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
     if (!onImportJsonl) return
     const reader = new FileReader()
     reader.onload = (e) => {
-      const text = typeof e.target?.result === 'string' ? e.target.result : ''
+      const text = isString(e.target?.result) ? e.target.result : ''
       if (text.trim()) {
         onImportJsonl(text, file.name)
         setCategory('live')

@@ -1,3 +1,4 @@
+import { TONE_STROKE } from '../services/statusTone'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { formatTokens } from '../types/telemetry'
 import {
@@ -23,7 +24,7 @@ const PADDING = 8
 const BAR_FILL = '#818CF8'
 const BAR_SELECTED = '#4338CA'
 const BAR_PINNED = '#312E81'
-const BAR_NEGATIVE = '#10B981'
+const BAR_NEGATIVE = TONE_STROKE.success
 
 /**
  * 上下文体量趋势轨道（纯 SVG，不引第三方图表库）

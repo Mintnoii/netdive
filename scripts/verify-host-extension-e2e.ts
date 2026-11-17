@@ -5,6 +5,8 @@ import { createBridgeApp } from '../src/server/bridge.ts'
 import { serve } from '@hono/node-server'
 import type { ServerType } from '@hono/node-server'
 import { pathToFileURL } from 'node:url'
+import { resolve } from 'pathe'
+import { homedir } from 'node:os'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 async function runE2E() {
@@ -12,6 +14,8 @@ async function runE2E() {
   const bridgeApp = createBridgeApp()
   const port = 4599
   process.env.NETDIVE_BRIDGE = `http://127.0.0.1:${port}`
+  // 本脚本验证的就是 HITL 拦截链路，显式开闸（扩展默认全放行）
+  process.env.NETDIVE_GATE_ENABLED = '1'
 
   const server: ServerType = serve({
     fetch: bridgeApp.app.fetch,
@@ -35,7 +39,10 @@ async function runE2E() {
 
     // 3. 加载全机映射的真实宿主扩展 (~/.pi/agent/extensions/pi-netdive-bridge)
     console.log('📦 正在加载宿主扩展: ~/.pi/agent/extensions/pi-netdive-bridge/index.ts')
-    const extensionUrl = pathToFileURL('C:/Users/wangqing/.pi/agent/extensions/pi-netdive-bridge/index.ts').href
+    const extensionPath =
+      process.env.NETDIVE_HOST_EXTENSION ||
+      resolve(homedir(), '.pi/agent/extensions/pi-netdive-bridge/index.ts')
+    const extensionUrl = pathToFileURL(extensionPath).href
     const extensionModule = await import(extensionUrl)
     const registerNetDiveBridge = extensionModule.default
     registerNetDiveBridge(mockPi)

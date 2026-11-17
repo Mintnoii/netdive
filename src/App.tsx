@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react'
 import {
   ReactFlow,
   Controls,
@@ -7,6 +7,8 @@ import {
   useReactFlow,
   type Node,
   type Edge,
+  type NodeChange,
+  type XYPosition,
 } from '@xyflow/react'
 import {
   FolderGit2,
@@ -18,9 +20,11 @@ import {
   ChevronRight,
   X,
 } from 'lucide-react'
-import { AgentNode, type AgentNodeData } from './components/AgentNode'
-import { TurnNode, type TurnNodeData } from './components/TurnNode'
+import { AgentNodeMemo } from './components/AgentNode'
+import { TurnNodeMemo } from './components/TurnNode'
 import { GateApprovalModal } from './components/GateApprovalModal'
+import { extractPrunableItems } from './services/sessionTopology'
+import { minimapNodeFill, minimapNodeStroke } from './services/statusTone'
 import { ContextStripBar } from './components/ContextStripBar'
 import { ContextInspectorDrawer } from './components/ContextInspectorDrawer'
 import { NodeDetailsDrawer } from './components/NodeDetailsDrawer'
@@ -29,8 +33,13 @@ import { StateTimelineScrubber } from './components/StateTimelineScrubber'
 import { NodeContextMenu } from './components/NodeContextMenu'
 import { HeaderNav, type StudioTab } from './components/HeaderNav'
 import { SessionListSidebar } from './components/SessionListSidebar'
-import { CompactorLabPage } from './pages/CompactorLabPage'
-import { ShowcasePage } from './pages/ShowcasePage'
+// 非首屏页面按需加载，首屏只承担执行控制台
+const CompactorLabPage = lazy(() =>
+  import('./pages/CompactorLabPage').then((mod) => ({ default: mod.CompactorLabPage }))
+)
+const ShowcasePage = lazy(() =>
+  import('./pages/ShowcasePage').then((mod) => ({ default: mod.ShowcasePage }))
+)
 import { useTelemetryStream } from './hooks/useTelemetryStream'
 import {
   formatRelativeTime,
@@ -50,8 +59,8 @@ import {
 
 // 注册自定义节点组件
 const nodeTypes = {
-  agentNode: AgentNode,
-  turnNode: TurnNode,
+  agentNode: AgentNodeMemo,
+  turnNode: TurnNodeMemo,
 }
 
 // 初始默认因果事件流（涵盖 思考 -> 实现 -> 异常单测 -> ReAct 自愈分叉 -> 自愈回归 -> 门禁审批 完整闭环）
@@ -195,22 +204,25 @@ function CanvasViewportController({
   return null
 }
 
+/**
+ * 按需加载占位：与 Paper & Ink 视觉同源，避免懒加载瞬间白屏
+ */
+const PageLoadingHint: React.FC<{ label: string }> = ({ label }) => (
+  <div className="flex-1 flex items-center justify-center text-xs font-mono text-[#8F887D]">
+    {label}...
+  </div>
+)
+
 function MainFlowCanvas() {
   const {
-    nodes,
-    edges,
-    onNodesChange,
     onEdgesChange,
     isPlaying,
-    setNodes,
-    setEdges,
     currentPendingGate,
     resolveCurrentGate,
     resetStream,
     bridge,
     watermark,
     setWatermark,
-    prunableItems,
     sessionsList,
     activeSessionId,
     setActiveSessionId,
@@ -254,6 +266,8 @@ function MainFlowCanvas() {
   const [activeTab, setActiveTab] = useState<StudioTab>('live')
   const [isInspectorOpen, setIsInspectorOpen] = useState(false)
   const [selectedDetailsNode, setSelectedDetailsNode] = useState<Node | null>(null)
+  // 仅记录被人类拖动过的节点位移，避免把整份派生节点镜像回状态
+  const [positionOverrides, setPositionOverrides] = useState<Record<string, XYPosition>>({})
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [selectedTurnForDrawer, setSelectedTurnForDrawer] = useState<MacroTurnGroup | null>(null)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
@@ -362,15 +376,35 @@ function MainFlowCanvas() {
     return { derivedNodes: fn, derivedEdges: fe }
   }, [rawEvents, viewMode, effectiveActiveDrilldownTurnId, activeTurn, currentTurnAllEvents, macroTurns, isFoldingEnabled])
 
-  // 当派生节点与边变更时，同步更新至 React Flow 状态
-  useEffect(() => {
-    if (derivedNodes.length > 0) {
-      setNodes(derivedNodes)
-      setEdges(derivedEdges)
-    }
-  }, [derivedNodes, derivedEdges, setNodes, setEdges])
+  // 派生结果直喂画布：不再回写 hook 内部 nodes 状态，消除每次事件的二次渲染
+  const totalNodesCount = derivedNodes.length
 
-  const totalNodesCount = nodes.length
+  // 剪枝机会：节点只提供瘦标量，完整载荷按 nodeId 从 eventsMap JIT 取回
+  const prunableItems = useMemo(
+    () => extractPrunableItems(derivedNodes, (nodeId) => eventsMap.get(nodeId)),
+    [derivedNodes, eventsMap]
+  )
+
+  /**
+   * 画布节点变更吸收器：仅记录人类拖拽产生的位移覆盖，
+   * 选中态由 selectedNodeId 单向注入，其余变更不落状态，避免整份节点镜像。
+   */
+  const handleDerivedNodesChange = useCallback((changes: NodeChange[]) => {
+    const moves = changes.filter(
+      (change): change is Extract<NodeChange, { type: 'position' }> =>
+        change.type === 'position' && Boolean(change.position)
+    )
+
+    if (moves.length === 0) return
+
+    setPositionOverrides((prev) => {
+      const next = { ...prev }
+      for (const move of moves) {
+        if (move.position) next[move.id] = move.position
+      }
+      return next
+    })
+  }, [])
 
   // 当前时间轴截断渲染的节点与边（根据 timelineStep 进行时光切片回放）
   const { visibleNodes, visibleEdges } = useMemo(() => {
@@ -379,13 +413,22 @@ function MainFlowCanvas() {
     }
     // 0 或 >= totalNodesCount 表示呈现全量最新态
     const step = timelineStep > 0 ? Math.min(timelineStep, totalNodesCount) : totalNodesCount
-    const sliced = nodes.slice(0, step)
+    const sliced = derivedNodes.slice(0, step).map((node) => {
+      const override = positionOverrides[node.id]
+      const isSelected = node.id === selectedNodeId
+      if (!override && node.selected === isSelected) return node
+      return {
+        ...node,
+        position: override ?? node.position,
+        selected: isSelected,
+      }
+    })
     const slicedIds = new Set(sliced.map((n) => n.id))
-    const slicedEdges = edges.filter(
+    const slicedEdges = derivedEdges.filter(
       (e) => slicedIds.has(e.source) && slicedIds.has(e.target)
     )
     return { visibleNodes: sliced, visibleEdges: slicedEdges }
-  }, [nodes, edges, timelineStep, totalNodesCount])
+  }, [derivedNodes, derivedEdges, timelineStep, totalNodesCount, positionOverrides, selectedNodeId])
 
   // 判断当前选中的会话是否处于活跃运行/待审批状态
   const isCurrentSessionActive = activeSessionMeta?.status === 'running' || activeSessionMeta?.status === 'gate'
@@ -483,7 +526,9 @@ function MainFlowCanvas() {
   if (isShowcaseRoute) {
     return (
       <div className="h-screen w-screen flex flex-col bg-[#FBF9F5] text-[#1E2024] overflow-hidden">
-        <ShowcasePage />
+        <Suspense fallback={<PageLoadingHint label="正在装载演示沙盒" />}>
+          <ShowcasePage />
+        </Suspense>
       </div>
     )
   }
@@ -697,7 +742,7 @@ function MainFlowCanvas() {
             {/* 主体画布与侧边栏抽屉协同 Push 布局 */}
             <main className="flex-1 flex w-full min-h-0 overflow-hidden relative">
               <div className="flex-1 h-full relative paper-pattern min-w-0 transition-all duration-300">
-                {activeSessionId === 'live-waiting' && nodes.length === 0 ? (
+                {activeSessionId === 'live-waiting' && totalNodesCount === 0 ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center select-none z-10 pointer-events-none">
                     <div className="w-12 h-12 rounded-2xl bg-white border border-[#E5E0D8] shadow-sm flex items-center justify-center mb-3 text-emerald-600">
                       <span className="w-3 h-3 rounded-full bg-emerald-500 animate-ping" />
@@ -713,7 +758,7 @@ function MainFlowCanvas() {
                   nodes={visibleNodes}
                   edges={visibleEdges}
                   nodeTypes={nodeTypes}
-                  onNodesChange={onNodesChange}
+                  onNodesChange={handleDerivedNodesChange}
                   onEdgesChange={onEdgesChange}
                   onNodeClick={(_event, node) => {
                     if (node.type === 'turnNode') {
@@ -742,6 +787,7 @@ function MainFlowCanvas() {
                   fitViewOptions={{ padding: 0.2, minZoom: 0.65 }}
                   minZoom={0.65}
                   maxZoom={1.5}
+                  onlyRenderVisibleElements
                 >
                   <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
                   <MiniMap
@@ -750,118 +796,8 @@ function MainFlowCanvas() {
                     maskStrokeColor="#D5CDBD"
                     maskStrokeWidth={1}
                     nodeStrokeWidth={1.5}
-                    nodeStrokeColor={(n) => {
-                      const isTurn = n.type === 'turnNode' || n.id.startsWith('turn-') || Boolean((n.data as Record<string, unknown>)?.turnId)
-                      if (isTurn) {
-                        const turnData = n.data as unknown as TurnNodeData | undefined
-                        const toolEntries = Object.entries(turnData?.toolCounts || {})
-                        const subEventsCount = turnData?.subEvents?.length || 0
-                        const isInputOnly =
-                          toolEntries.length === 0 &&
-                          (subEventsCount <= 1 ||
-                            (turnData?.subEvents &&
-                              turnData.subEvents.every(
-                                (e) => e.actor === 'Human Operator' || /用户|User/i.test(e.title || '')
-                              )))
-
-                        // 用户取消回合：小地图使用更低饱和更弱化的中冷灰 (#78716C stone-500) 描边
-                        if (isInputOnly) return '#78716C'
-
-                        const status = (turnData?.status || (n as unknown as { status?: string }).status)
-                        switch (status) {
-                          case 'failed':
-                            return '#F43F5E'
-                          case 'gate':
-                            return '#F59E0B'
-                          case 'branching':
-                            return '#D97706'
-                          case 'running':
-                            return '#6366F1'
-                          case 'success':
-                          default:
-                            return '#10B981'
-                        }
-                      }
-                      const nodeData = n.data as unknown as AgentNodeData
-                      if (nodeData?.status === 'failed' || nodeData?.status === 'rejected') return '#EF4444'
-                      if (nodeData?.status === 'gate') return '#F59E0B'
-                      if (nodeData?.isCorrectionBranch) return '#D97706'
-                      if (nodeData?.isAggregated) return '#B5AFA4'
-                      if (nodeData?.status === 'running') return '#6366F1'
-                      return '#10B981'
-                    }}
-                    nodeColor={(n) => {
-                      const isTurn = n.type === 'turnNode' || n.id.startsWith('turn-') || Boolean((n.data as Record<string, unknown>)?.turnId)
-                      // 1. 宏观回合节点 (TurnNode)：根据回合执行状态精准映射，告别大黑块
-                      if (isTurn) {
-                        const turnData = n.data as unknown as TurnNodeData | undefined
-                        const toolEntries = Object.entries(turnData?.toolCounts || {})
-                        const subEventsCount = turnData?.subEvents?.length || 0
-                        const isInputOnly =
-                          toolEntries.length === 0 &&
-                          (subEventsCount <= 1 ||
-                            (turnData?.subEvents &&
-                              turnData.subEvents.every(
-                                (e) => e.actor === 'Human Operator' || /用户|User/i.test(e.title || '')
-                              )))
-
-                        // 用户取消回合：小地图使用更灰更沉静的底色 (#D6D3D1 stone-300)
-                        if (isInputOnly) return '#D6D3D1'
-
-                        const status = (turnData?.status || (n as unknown as { status?: string }).status)
-                        switch (status) {
-                          case 'failed':
-                            return '#FFE4E6' // rose-100 (单测异常/失败)
-                          case 'gate':
-                            return '#FEF3C7' // amber-100 (门禁待审)
-                          case 'branching':
-                            return '#FEF9C3' // yellow-100 (自愈闭环分支)
-                          case 'running':
-                            return '#E0E7FF' // indigo-100 (运行中)
-                          case 'success':
-                          default:
-                            return '#D1FAE5' // emerald-100 (完成)
-                        }
-                      }
-
-                      // 2. 微观执行节点 (AgentNode)：优先根据状态（失败/门禁/聚合/自愈/完成）映射画布真实色彩
-                      const nodeData = n.data as unknown as AgentNodeData
-                      if (nodeData?.status === 'failed' || nodeData?.status === 'rejected') {
-                        return '#FEE2E2' // red-100 (执行失败/拦截)
-                      }
-                      if (nodeData?.status === 'gate') {
-                        return '#FEF3C7' // amber-100 (待审)
-                      }
-                      if (nodeData?.isCorrectionBranch) {
-                        return '#FEF9C3' // amber-50 / yellow-100 (自愈分支)
-                      }
-                      if (nodeData?.isAggregated) {
-                        return '#EAE4D9' // 聚合卡片特有的素雅叠纸暖灰 (#EAE4D9)
-                      }
-                      if (nodeData?.status === 'running') {
-                        return '#E0E7FF' // indigo-100 (运行中)
-                      }
-                      if (nodeData?.pruned) {
-                        return '#F5F5F4' // stone-100 (已修剪)
-                      }
-
-                      // 3. 正常完成状态下，根据六大手势语义映射对应手势色阶底色
-                      switch (nodeData?.gesture) {
-                        case 'read':
-                          return '#E0F2FE' // sky-100 (代码检视)
-                        case 'bash':
-                          return '#D1FAE5' // emerald-100 (终端执行)
-                        case 'edit':
-                          return '#DBEAFE' // blue-100 (文件修改)
-                        case 'memory':
-                          return '#F3E8FF' // purple-100 (记忆存取)
-                        case 'gate':
-                          return '#FEF3C7' // amber-100 (门禁)
-                        case 'think':
-                        default:
-                          return '#EEF2FF' // indigo-50 (推理思考)
-                      }
-                    }}
+                    nodeStrokeColor={(n) => minimapNodeStroke(n)}
+                    nodeColor={(n) => minimapNodeFill(n)}
                     zoomable
                     pannable
                   />
@@ -1080,7 +1016,9 @@ function MainFlowCanvas() {
         </div>
       ) : (
         <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
-          <CompactorLabPage />
+          <Suspense fallback={<PageLoadingHint label="正在装载压缩沙盒" />}>
+            <CompactorLabPage />
+          </Suspense>
         </div>
       )}
 

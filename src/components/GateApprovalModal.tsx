@@ -9,6 +9,11 @@ import {
   FileCode2,
 } from 'lucide-react'
 import type { GateDecision, GatePromptPayload } from '../types/telemetry'
+import {
+  buildApproveDecision,
+  buildModifyDecision,
+  buildRejectDecision,
+} from '../services/gateDecisions'
 
 export interface GateApprovalModalProps {
   payload: GatePromptPayload | null
@@ -34,27 +39,17 @@ export const GateApprovalModal: React.FC<GateApprovalModalProps> = ({
 
   const handleApprove = useCallback(() => {
     if (!payload) return
-    onResolve({
-      action: 'approve',
-    })
+    onResolve(buildApproveDecision())
   }, [payload, onResolve])
 
   const handleModify = useCallback(() => {
     if (!payload) return
-    const text = steering.trim()
-    onResolve({
-      action: 'modify',
-      feedback: text,
-      modifiedCommand: text,
-    })
+    onResolve(buildModifyDecision(steering))
   }, [payload, steering, onResolve])
 
   const handleReject = useCallback(() => {
     if (!payload) return
-    onResolve({
-      action: 'reject',
-      feedback: steering.trim() || '人类操作员拒绝放行',
-    })
+    onResolve(buildRejectDecision(steering))
   }, [payload, steering, onResolve])
 
   // 键盘全局快捷键：Esc 拦截，Ctrl+Enter / Meta+Enter 提交放行
@@ -114,6 +109,11 @@ export const GateApprovalModal: React.FC<GateApprovalModalProps> = ({
                 >
                   {payload.riskLevel} risk
                 </span>
+                {payload.demoOnly && (
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border border-stone-300 bg-stone-100 text-stone-600">
+                    仅演示 · 不参与真实会话
+                  </span>
+                )}
               </h3>
               <p className="text-[10px] text-[#8F887D] font-mono mt-0.5">
                 ID: {payload.gateId} ·{' '}

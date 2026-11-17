@@ -1,3 +1,5 @@
+import { isString } from 'radash'
+
 /**
  * NetDive Model Context Window Resolution Service
  * 本表是本地保守规则表，未收录的模型一律走兜底，禁止为了让数字好看而随手添加未经核对的窗口值。
@@ -59,7 +61,7 @@ const MODEL_WINDOW_RULES: readonly ModelWindowRule[] = [
  * @param modelId 模型标识符，支持大小写不敏感子串匹配
  */
 export function resolveContextWindow(modelId?: string | null): ContextWindowResolution {
-  if (!modelId || typeof modelId !== 'string') {
+  if (!modelId || !isString(modelId)) {
     return {
       window: FALLBACK_CONTEXT_WINDOW,
       source: 'default',

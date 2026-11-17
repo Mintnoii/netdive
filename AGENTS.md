@@ -23,6 +23,7 @@ status: evergreen
    Agent 长任务中产生的过渡自白、高频轮询与冗长工具输出单调递增，必然导致注意力稀释。NetDive 的使命是在前端与传输层充当“麦克斯韦妖”，通过**确定性微压缩 (Micro-Compactor)**、**连续调用智能折叠 (Coalescing)** 与 **分层聚焦 (Hierarchical Drilldown)** 主动阻断熵增；
 3. **主动缰绳防御优于被动记账 (Active Gate vs Passive APM)**：
    传统的 APM 只能在事后记录灾难。NetDive 通过基于 `Promise.withResolvers()` 的跨进程双向挂起协议，在模型执行高危动作（如 `git commit`、破坏性命令）或发生致命共振（$\ge 2$ 次死循环重复报错）时，**零延迟实施物理挂起并移交人类仲裁**。
+   ⚠️ 宿主扩展侧拦截默认关闭（`NETDIVE_GATE_ENABLED` 未设时为全放行，只观测不拦截），需物理拦截时必须显式开闸；演示与 E2E 脚本自带 `demoOnly` / 临时开闸，不得把演示流的拦截状态当真。
 
 ---
 
@@ -35,15 +36,24 @@ netdive/
 │   ├── server/              # 【桥接层】基于 Hono 4.x 的本地伴生 Sidecar (127.0.0.1:4560)
 │   │   ├── bridge.ts        # HTTP RPC (门禁挂起/恢复) + WebSocket (流式旁路广播)
 │   │   └── index.ts         # 桥接服务入口
+│   ├── config/              # 【配置单一真源】bridge.ts 统一桥接端口/主机与端点推导
+│   ├── utils/               # 【公共底座】http.ts 全仓唯一网络请求入口 ([err, data] 解构 + 超时)
 │   ├── services/            # 【控制论与算法核心】
-│   │   ├── transcriptParser.ts  # JSONL 流水规范化、连续折叠与 React Flow 网格排版
+│   │   ├── transcriptParser.ts  # 协议分发 + 事件聚合 + React Flow 网格排版（编排层）
+│   │   ├── protocols/           # Pi / Claude 协议适配器与共享解析原语（shared/pi/claude）
+│   │   ├── localSessionScanner.ts # 本地存量会话扫描纯函数（pathe + radash，替代命令式 IO）
+│   │   ├── sessionTopology.ts   # 会话模型/因果建链/归约/演练剧本纯逻辑层
+│   │   ├── flowLayout.ts        # React Flow 坐标、折行网格与连线语义单一真源
+│   │   ├── nodeFacets.ts        # 节点瘦视图标量抽取（严禁 observation/payload 入节点）
+│   │   ├── gateDecisions.ts     # 门禁裁决信封纯函数构造器
+│   │   ├── statusTone.ts        # 画布状态语义色单一真源（描边/填充/分支边样式）
 │   │   ├── assertionEngine.ts   # L1 确定性硬断言 (退出码、高危命令、死循环检测)
 │   │   └── microCompactor.ts    # Head 15 + Tail 15 确定性微压缩与 WAL 离线指针
 │   ├── types/               # 【数据契约】telemetry.ts 强类型定义
 │   ├── components/          # 【React Flow 画布原子组件】AgentNode, TurnNode, Scrubber 等
-│   └── pages/               # 【多页面工作台矩阵】
-│       ├── SessionReplayPage.tsx # 本地 JSONL 会话时光机与平滑运镜
-│       └── CompactorLabPage.tsx  # 微压缩与 Prompt Cache 前缀保真实验室
+│   └── pages/               # 【实验与演示入口】
+│       ├── CompactorLabPage.tsx  # 微压缩与 Prompt Cache 前缀保真实验室
+│       └── ShowcasePage.tsx      # 四幕端到端演示沙盒
 └── openspec/                # 【规约演进提案库】每个重大特性必须立项留档
 ```
 

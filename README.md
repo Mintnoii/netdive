@@ -8,15 +8,12 @@
 [![TypeScript 7.x](https://img.shields.io/badge/TypeScript-7.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![React 19](https://img.shields.io/badge/React-19.x-61dafb?logo=react)](https://react.dev/)
 [![Hono 4.x](https://img.shields.io/badge/Hono-4.x-E36002?logo=hono)](https://hono.dev/)
-[![Build & Tests](https://img.shields.io/badge/Tests-233%20Passed%20(100%25)-brightgreen)]()
+[![Build & Tests](https://img.shields.io/badge/Tests-359%20Passed%20(100%25)-brightgreen)]()
 
 ---
 
 ![NetDive 控制台界面全景](./public/netdive-preview.png)
 *图 1：单向因果主干拓扑、ReAct 错误自愈分叉与底部上下文水位条*
-
-![NetDive 会话时光机界面](./public/session-replay-autopan-preview.png)
-*图 2：NetDive 会话时光机 (Session Replay)：解析本地真实 JSONL 会话流、智能连续调用聚合折叠 (Folding) 与时间轴无感回放*
 
 ---
 
@@ -35,21 +32,21 @@
 
 ## 核心系统架构矩阵 (Studio Architecture)
 
-NetDive 采用多页面实验室（Studio Matrix）架构，将不同层级的主动控制与可观测能力正交解耦：
+NetDive 采用单页控制台承载主链路，其余能力按「实验 / 演示」正交拆为独立入口：
 
 ```text
  ┌────────────────────────────────────────────────────────────────────────┐
  │                      NetDive 控制台工作台 (Studio)                      │
- ├───────────────────┬──────────────────────────┬─────────────────────────┤
- │ 页面 1: 实时控制台 │ 页面 2: 会话时光机        │ 页面 3: 工业级观测实验室 │
- │ (Live Console)    │ (Session Replay)         │ (Compactor & OTel Lab)  │
- ├───────────────────┼──────────────────────────┼─────────────────────────┤
- │ · React Flow 因果 │ · 本地 Pi/Claude JSONL   │ · OpenTelemetry 标准兼容│
- │ · L1 确定性硬断言 │   文件拖拽与秒级流式解析 │ · Head 15 + Tail 15     │
- │ · HITL 跨进程门禁 │ · 连续工具智能聚合折叠   │   确定性微压缩 (零Token) │
- │ · 致命共振自动熔断│ · 进度比率锁定时间轴     │ · WAL 离线指针检索与重放 │
- │ · 双模自动感知沙盒│ · 平滑运镜追焦 (Auto-Pan)│ · Prompt Cache 前缀保真 │
- └───────────────────┴──────────────────────────┴─────────────────────────┘
+ ├─────────────────────────────────┬──────────────────────────────────────┤
+ │ 入口 1: 执行控制台              │ 入口 2: 压缩沙盒 / Sandbox            │
+ │ (Live Console)                  │ (Compactor Lab & Showcase)           │
+ ├─────────────────────────────────┼──────────────────────────────────────┤
+ │ · React Flow 因果拓扑与虚拟化   │ · Head 15 + Tail 15 确定性微压缩     │
+ │ · L1 确定性硬断言与自愈分叉     │ · WAL 指针检索与原文回放             │
+ │ · 致命共振熔断与 HITL 门禁      │ · Prompt Cache 前缀保真              │
+ │ · 本地 JSONL 导入 + 时间轴回放  │ · 七类上下文水位与压缩机会剖析        │
+ │ · 连续工具智能聚合折叠          │ · 端到端演示沙盒 (四幕剧本)          │
+ └─────────────────────────────────┴──────────────────────────────────────┘
                                 ▲
                                 │ 双轨信道：HTTP (RPC 阻塞) / WebSocket (流式旁路)
                                 ▼
@@ -69,16 +66,19 @@ NetDive 采用多页面实验室（Studio Matrix）架构，将不同层级的�
 ### 1. 双向人机审批门禁 (Human-in-the-Loop Promise Gate)
 - **跨进程异步挂起**：基于 JavaScript 原生 `Promise.withResolvers()` 实现跨进程异步 RPC。当外部 Agent 触发 `git commit`、敏感写操作或高危指令时，调用方被物理阻塞挂起，前端居中唤起高危审批模态窗，操作员拍板放行或附加热纠偏指令（Steering）后方恢复执行；
 - **致命共振熔断 (Fatal Failure Resonance)**：当同一异常特征连续捕获 $\ge 2$ 次时，系统自动判定为死循环死锁并强制触发紧急熔断门禁，彻底阻断 Token 损耗。
+- **裁决契约单一真源**：服务端统一裁决信封 `{ action: 'approve' | 'reject' | 'modify', feedback, modifiedCommand }`，客户端按 `action` 解读，任何未知响应一律不伪装成已批准；等待裁决超时返回显式 `timeout`，而非静默放行；
+- **演示沙盒硬隔离 (`demoOnly`)**：带 `demoOnly` 标记的遥测与门禁在服务端一律隔离到 `demo-` 会话命名空间，旁路 L1 断言状态（不写失败指纹、不触发真实共振），在 UI 上也不会自动抢占真实活跃画布，无真门禁时才让出审批模态窗。演示脚本默认开启该标记，确保演示永不影响真实工作流。
 
 ### 2. L1 确定性硬断言与 ReAct 自愈分叉
 - **退出码与 AST 硬拦截**：脱离“放任大模型自由反思”的幻觉泥潭。工具执行返回时，引擎首先执行 L1 确定性规则审查（`exitCode !== 0`、语法报错、超时）；
 - **自愈拓扑沉降**：未通过断言的节点自动标记为异常，执行流沉降为下方的**琥珀金自愈分支**，待修复补丁通过单测验证（`exitCode: 0`）后，平滑连回主干，形成闭环因果图。
 
-### 3. 会话时光机与连续调用智能折叠 (Session Replay & Tool Folding)
+### 3. 本地会话回放与连续调用智能折叠 (Session Replay & Tool Folding)
 - **零侵入会话解析引擎**：内置高性能原生解析器，无需修改任何业务代码，直接消费本地 `~/.pi/agent/sessions/*.jsonl` 或 Claude Code 历史会话；
 - **智能聚合折叠 (Folding)**：针对连续多次读取同文件或连续批处理命令，自动融合为带 `×N` 胶囊标记的多层物理叠纸卡片（Stacked Sheets）；
 - **异常强隔离守卫**：序列中只要出现失败调用，算法自动切断折叠并单独突显自愈节点，杜绝掩盖故障；
 - **时钟比率锁定与平滑运镜**：切换折叠或回放倍速时，进度滑块物理百分比纹丝不动；回放时镜头平滑跟随最新执行卡片，用户手动审查时自动暂停追焦。
+- **回放形态**：本地 JSONL（`~/.pi/agent/sessions/*.jsonl`）可直接拖入画布，或从会话列表点选，回放与实时流共用同一块画布与顶部时间轴，不再单独拆页。
 
 ### 4. 确定性微压缩与 WAL 离线指针 (Micro-Compactor)
 - **折叠规则**：工具输出超过 40 行或 1500 字符时，保留 Head 15 行、折叠标记行与 Tail 15 行，纯函数计算，零模型调用；
@@ -120,8 +120,8 @@ pnpm install
 pnpm dev
 ```
 打开浏览器访问 `http://localhost:5173`。
-- **页面 1：实时拓扑 (Live Console)**：体验单向主干推进、ReAct 自愈分叉演练、底部上下文水位明细抽屉与双向门禁；
-- **页面 2：会话时光机 (Session Replay)**：点击上方「加载真实样本」，或者直接**把电脑上的任意 `.jsonl` 拖入画布**，通过时间轴播放器像看电影一样回放完整执行拓扑！
+- **执行控制台**：体验单向主干推进、ReAct 自愈分叉演练、底部上下文水位明细抽屉与双向门禁；本地 `.jsonl` 可直接拖入画布，或从侧边会话列表点选后沿时间轴回放；
+- **压缩沙盒 / Sandbox**：试算微压缩收益、剖开七类上下文水位、跑四幕演示剧本，不消费真实会话数据。
 
 #### 模式 B：启动跨进程 Local Bridge (接入本地真实 Agent / 流水线)
 ```bash
@@ -129,6 +129,8 @@ pnpm start
 # 或 pnpm run server
 ```
 Hono 跨进程伴生服务将运行在 `127.0.0.1:4560`，支持 WebSocket 实时遥测广播与双向门禁 RPC。
+
+> **门禁开关（默认关闭）**：宿主扩展 `pi-netdive-bridge` 的高危命令拦截默认关闭，只观测不拦截，所有工具调用零阻塞放行。需要物理挂起审批时显式开闸：`NETDIVE_GATE_ENABLED=1`。演示脚本与 E2E 脚本会自行临时开闸，不影响日常使用。
 
 #### 运行端到端工作流实测
 保持控制台运行，在另一个终端执行：
@@ -141,10 +143,10 @@ pnpm test:workflow
 
 ## 自动化测试与工程质量
 
-全仓包含 **284 项单元与集成测试**，覆盖 Bridge RPC 挂起、L1 确定性硬断言、WAL 离线指针、Prompt Caching 前缀保真、JSONL 聚合折叠、7-part 上下文采集对账、压缩机会剖析纯函数、模型窗口解析，以及上下文趋势轨道、联动契约与可信度标注：
+全仓包含 **359 项单元与集成测试**，覆盖 Bridge RPC 挂起、L1 确定性硬断言、WAL 离线指针、Prompt Caching 前缀保真、JSONL 聚合折叠、7-part 上下文采集对账、压缩机会剖析纯函数、模型窗口解析，以及上下文趋势轨道、联动契约与可信度标注：
 
 ```bash
-# 执行全量单元测试 (284 passed, 0 fail)
+# 执行全量单元测试 (359 passed, 0 fail)
 pnpm test
 
 # 静态检查 (oxlint，当前 9 条 warning，均为 react-hooks 与 fast-refresh 提示)

@@ -541,3 +541,23 @@ describe('MicroCompactor Engine Unit Tests', () => {
     })
   })
 })
+
+describe('WAL 容量治理契约', () => {
+  it('超过容量上限时按 FIFO 淘汰最旧指针，统计口径反映当前存活条目', () => {
+    const bounded = new MicroCompactor({ maxWalEntries: 2 })
+    const heavyOutput = Array.from({ length: 80 }, (_, i) => `line ${i}`)
+
+    const first = bounded.compactToolOutput(heavyOutput, { toolName: 'bash' })
+    const second = bounded.compactToolOutput(heavyOutput, { toolName: 'bash' })
+    const third = bounded.compactToolOutput(heavyOutput, { toolName: 'bash' })
+
+    assert.equal(first.compacted, true)
+    assert.equal(second.compacted, true)
+    assert.equal(third.compacted, true)
+
+    assert.equal(bounded.hasWal(first.pointerId!), false, '最旧指针已被淘汰')
+    assert.equal(bounded.hasWal(second.pointerId!), true)
+    assert.equal(bounded.hasWal(third.pointerId!), true)
+    assert.equal(bounded.getWalStats().totalEntries, 2, '统计口径与存活条目一致')
+  })
+})

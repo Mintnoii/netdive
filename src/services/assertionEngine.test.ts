@@ -363,4 +363,66 @@ describe('L1 Deterministic Assertion Engine Unit Tests', () => {
       assert.ok(signature.includes('pnpm test::exit_1'))
     })
   })
+
+  describe('Rule 4: 会话作用域隔离与连续失败语义', () => {
+    it('相同失败特征在不用会话中互不串味，不触发跨会话熔断', () => {
+      const isolated = new AssertionEngine()
+      const failing = (sessionId: string) => ({
+        tool: 'bash',
+        sessionId,
+        command: 'pnpm test',
+        exitCode: 1,
+        output: ['AssertionError: expected 200 got 500'],
+      })
+
+      const first = isolated.evaluate(failing('session-a'))
+      assert.equal(first.triggerGate, false, '会话 A 首次失败只触发自愈分叉')
+      assert.equal(first.failureCount, 1)
+
+      const second = isolated.evaluate(failing('session-b'))
+      assert.equal(second.triggerGate, false, '会话 B 首次失败绝不因 A 的历史而熔断')
+      assert.equal(second.failureCount, 1)
+    })
+
+    it('同会话内重试成功后计数清零，不再累加至熔断', () => {
+      const engineReset = new AssertionEngine()
+      const failing = {
+        tool: 'bash',
+        sessionId: 'session-c',
+        command: 'pnpm test',
+        exitCode: 1,
+        output: ['AssertionError: boom'],
+      }
+      const passing = { ...failing, exitCode: 0, output: ['12 passed'] }
+
+      const failedOnce = engineReset.evaluate(failing)
+      assert.equal(failedOnce.failureCount, 1)
+
+      const ok = engineReset.evaluate(passing)
+      assert.equal(ok.passed, true)
+      assert.equal(engineReset.getFailureCount(failing), 0, '成功即清零连续失败计数')
+
+      const failedAgain = engineReset.evaluate(failing)
+      assert.equal(failedAgain.failureCount, 1, '清零后重新从 1 计数，不误熔断')
+      assert.equal(failedAgain.triggerGate, false)
+    })
+
+    it('失败指纹表有界：超出容量上限按插入顺序淘汰最旧条目', () => {
+      const bounded = new AssertionEngine({ maxTrackedSignatures: 2 })
+      const makeFailure = (command: string) => ({
+        tool: 'bash',
+        sessionId: 'session-d',
+        command,
+        exitCode: 1,
+        output: ['fail'],
+      })
+
+      bounded.evaluate(makeFailure('cmd-1'))
+      bounded.evaluate(makeFailure('cmd-2'))
+      bounded.evaluate(makeFailure('cmd-3'))
+
+      assert.equal(bounded.getFailureCount(makeFailure('cmd-1')), 0, '最旧指纹已被淘汰')
+      assert.equal(bounded.getFailureCount(makeFailure('cmd-3')), 1)
+    })
+  })
 })

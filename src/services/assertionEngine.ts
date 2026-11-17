@@ -6,7 +6,7 @@ import type {
   TelemetryStatus,
 } from '../types/telemetry'
 import { normalizeObservationOutput } from '../types/telemetry'
-import { tryit } from 'radash'
+import { tryit , isString } from 'radash'
 
 export type { AssertionResult }
 
@@ -22,6 +22,7 @@ export interface ToolExecutionContext {
   exitCode?: number
   output?: string | string[]
   traceId?: string
+  sessionId?: string
   nodeId?: string
   title?: string
   status?: TelemetryStatus
@@ -74,7 +75,7 @@ export const SCHEMA_ERROR_PATTERNS: RegExp[] = [
  * 声明式模式匹配直给，消除天书正则与心虚 includes 兜底负向叠加
  */
 export function matchHighRiskCommand(command: string): { matched: boolean; pattern?: string } {
-  if (!command || typeof command !== 'string') return { matched: false }
+  if (!command || !isString(command)) return { matched: false }
   const trimmed = command.trim()
 
   const matchedPattern = HIGH_RISK_COMMAND_PATTERNS.find((pattern) => pattern.test(trimmed))
@@ -140,7 +141,12 @@ export function detectSchemaError(
  * 计算确定性失败指纹 (Deterministic Failure Signature)
  * 供 Rule 2 判定重复失败与致命共振
  */
-export function computeFailureSignature(context: ToolExecutionContext): string {
+/**
+ * 解析失败指纹的会话作用域前缀（会话 + 目标命令/工具）
+ * 成功清零时按此前缀清除同目标的所有历史指纹，保证「连续失败」语义自洽
+ */
+function resolveSignaturePrefix(context: ToolExecutionContext): string {
+  const sessionScope = context.sessionId?.trim() || 'global'
   const target =
     context.command ||
     context.tool ||
@@ -149,6 +155,14 @@ export function computeFailureSignature(context: ToolExecutionContext): string {
     context.nodeId ||
     'tool_execution'
 
+  return `${sessionScope}::${target}::`
+}
+
+/**
+ * 计算确定性失败指纹 (Deterministic Failure Signature)
+ * 供 Rule 2 判定重复失败与致命共振
+ */
+export function computeFailureSignature(context: ToolExecutionContext): string {
   const exitCode =
     context.exitCode !== undefined
       ? context.exitCode
@@ -168,12 +182,17 @@ export function computeFailureSignature(context: ToolExecutionContext): string {
       .slice(0, 2)
       .join(' | ') || 'exit_error'
 
-  return `${target}::exit_${exitCode}::${keyError}`
+  return `${resolveSignaturePrefix(context)}exit_${exitCode}::${keyError}`
 }
 
 export interface AssertionEngineOptions {
   maxFailuresBeforeResonance?: number
+  /** 失败指纹表容量上限，超出按插入顺序淘汰最旧条目 */
+  maxTrackedSignatures?: number
 }
+
+/** 默认失败指纹追踪容量（长跑常驻进程的有界保证） */
+export const DEFAULT_MAX_TRACKED_SIGNATURES = 500
 
 /**
  * L1 确定性断言引擎 (L1 Deterministic Assertion Engine)
@@ -188,9 +207,38 @@ export interface AssertionEngineOptions {
 export class AssertionEngine {
   private failureHistory = new Map<string, number>()
   private maxFailuresBeforeResonance: number
+  private maxTrackedSignatures: number
 
   constructor(options: AssertionEngineOptions = {}) {
     this.maxFailuresBeforeResonance = options.maxFailuresBeforeResonance ?? 2
+    this.maxTrackedSignatures = options.maxTrackedSignatures ?? DEFAULT_MAX_TRACKED_SIGNATURES
+  }
+
+  /**
+   * 记录一次连续失败（相同指纹累加）
+   * 超出容量上限时按插入顺序淘汰最旧指纹，保证常驻进程内存有界
+   */
+  private recordFailure(signature: string): number {
+    const nextCount = (this.failureHistory.get(signature) ?? 0) + 1
+    this.failureHistory.delete(signature)
+    this.failureHistory.set(signature, nextCount)
+
+    while (this.failureHistory.size > this.maxTrackedSignatures) {
+      const oldestKey = this.failureHistory.keys().next().value
+      if (oldestKey === undefined) break
+      this.failureHistory.delete(oldestKey)
+    }
+
+    return nextCount
+  }
+
+  /**
+   * 成功即清零：失败计数语义为「连续失败」，同一目标重试成功即清空其全部历史指纹
+   */
+  private resetFailure(context: ToolExecutionContext): void {
+    const prefix = resolveSignaturePrefix(context)
+    const staleKeys = Array.from(this.failureHistory.keys()).filter((key) => key.startsWith(prefix))
+    staleKeys.forEach((key) => this.failureHistory.delete(key))
   }
 
   /**
@@ -212,7 +260,7 @@ export class AssertionEngine {
    */
   getFailureCount(signatureOrContext: string | ToolExecutionContext): number {
     const signature =
-      typeof signatureOrContext === 'string'
+      isString(signatureOrContext)
         ? signatureOrContext
         : computeFailureSignature(signatureOrContext)
     return this.failureHistory.get(signature) || 0
@@ -237,8 +285,8 @@ export class AssertionEngine {
     const proposedAction = context.payload?.proposedAction as { command?: string } | undefined
     const commandToCheck =
       context.command ||
-      (typeof context.payload?.command === 'string' ? context.payload.command : undefined) ||
-      (typeof proposedAction?.command === 'string' ? proposedAction.command : undefined) ||
+      (isString(context.payload?.command) ? context.payload.command : undefined) ||
+      (isString(proposedAction?.command) ? proposedAction.command : undefined) ||
       (context.gesture === 'bash' ? context.title : undefined)
 
     if (commandToCheck) {
@@ -285,10 +333,9 @@ export class AssertionEngine {
       context.status === 'failed'
 
     if (hasFailure) {
-      // 计算确定性失败指纹
+      // 计算确定性失败指纹（含会话作用域）并累加连续失败次数
       const signature = computeFailureSignature(context)
-      const currentCount = (this.failureHistory.get(signature) || 0) + 1
-      this.failureHistory.set(signature, currentCount)
+      const currentCount = this.recordFailure(signature)
 
       // -----------------------------------------------------------------------
       // Rule 2: 重复失败死循环共振检测 (Repetitive Failure Loop Detector)
@@ -374,7 +421,10 @@ export class AssertionEngine {
 
     // -------------------------------------------------------------------------
     // 正常通过断言 (Clean Passed)
+    // 成功即清零：失败计数只表达「连续失败」，靠重试成功即解除熔断压力
     // -------------------------------------------------------------------------
+    this.resetFailure(context)
+
     return {
       passed: true,
       triggerSelfCorrection: false,
@@ -394,9 +444,9 @@ export class AssertionEngine {
       const event = input as TelemetryEvent
       const proposedAction = event.payload?.proposedAction as { command?: string } | undefined
       const command =
-        (typeof event.payload?.command === 'string' ? event.payload.command : undefined) ||
+        (isString(event.payload?.command) ? event.payload.command : undefined) ||
         event.gatePayload?.proposedAction?.command ||
-        (typeof proposedAction?.command === 'string' ? proposedAction.command : undefined) ||
+        (isString(proposedAction?.command) ? proposedAction.command : undefined) ||
         event.title
 
       return {
@@ -408,6 +458,7 @@ export class AssertionEngine {
         exitCode: event.observation?.exitCode,
         output: event.observation?.output,
         traceId: event.traceId,
+        sessionId: event.sessionId,
         nodeId: event.nodeId,
         title: event.title,
         status: event.status,

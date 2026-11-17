@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { tryit } from 'radash'
-import { DEFAULT_BRIDGE_HTTP_URL } from './useBridgeConnection'
+import { DEFAULT_BRIDGE_HTTP_URL } from '../config/bridge'
+import { httpJson } from '../utils/http'
 
 export interface WalStats {
   totalEntries: number
@@ -41,54 +41,38 @@ export function useWalStats(enabled: boolean): {
 
     setIsLoading(true)
 
-    const [fetchErr, response] = await tryit(async () => {
-      return await fetch(`${DEFAULT_BRIDGE_HTTP_URL}/api/wal`, { signal: controller.signal })
-    })()
+    const [err, body] = await httpJson<WalApiResponse>(`${DEFAULT_BRIDGE_HTTP_URL}/api/wal`, {
+      signal: controller.signal,
+    })
 
     if (controller.signal.aborted) {
       return
     }
 
-    if (fetchErr || !response || !response.ok) {
+    const stats = body?.ok ? body.stats : undefined
+
+    if (err || !stats) {
       setIsOffline(true)
       setStats(null)
       setIsLoading(false)
       return
     }
 
-    const [jsonErr, body] = await tryit(async () => {
-      return (await response.json()) as WalApiResponse
-    })()
+    const { totalEntries, totalRawChars, totalCompactedChars, totalReclaimedChars } = stats
 
-    if (controller.signal.aborted) {
-      return
-    }
-
-    if (jsonErr || !body || !body.ok || !body.stats) {
-      setIsOffline(true)
-      setStats(null)
-      setIsLoading(false)
-      return
-    }
-
-    const { totalEntries, totalRawChars, totalCompactedChars, totalReclaimedChars } = body.stats
     if (
       typeof totalEntries === 'number' &&
       typeof totalRawChars === 'number' &&
       typeof totalCompactedChars === 'number' &&
       typeof totalReclaimedChars === 'number'
     ) {
-      setStats({
-        totalEntries,
-        totalRawChars,
-        totalCompactedChars,
-        totalReclaimedChars,
-      })
+      setStats({ totalEntries, totalRawChars, totalCompactedChars, totalReclaimedChars })
       setIsOffline(false)
     } else {
       setIsOffline(true)
       setStats(null)
     }
+
     setIsLoading(false)
   }, [enabled])
 

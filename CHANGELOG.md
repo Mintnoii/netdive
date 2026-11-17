@@ -1,5 +1,101 @@
 # Changelog
 
+## 未发布 — 瘦节点视图模型落地 (2026-11-17)
+
+第四轮收敛，修的是「项目自己的门禁条款被自己的代码违反」：`AGENTS.md §3.3` 明令禁止把完整 stdout / payload 塞进画布节点，但只有回放路径遵守，实时路径一直违规。这一版把两条轨道拉齐。
+
+### 变更
+
+- **新增 `src/services/nodeFacets.ts`**：`deriveNodeFacets(event)` 把渲染真正需要的字段抽成扁平标量（`command` / `filePath` / `pattern` / `exitCode` / `outputHead` / `outputLineCount` / `outputChars` / `hasDiff`），实时流与回放两条轨道共用。
+- **节点不再携带大对象**：`sessionTopology` 三处建节点分支与 `transcriptParser` 回放侧统一改走 facets，`node.data` 里不再出现 `observation` / `payload`；长会话内存不再随工具输出线性膨胀，`AgentNodeMemo` 的比较器也真正生效。
+- **详情一律 JIT**：`NodeDetailsDrawer` 删除 `nodeData` 兜底，只从 `eventsMap` 取原始事件；浏览器实测失败节点的完整 `AssertionError` 堆栈仍可查看。
+- **剪枝面板保持完整预览**：`extractPrunableItems(nodes, lookupEvent?)` 支持按 nodeId 回取事件，`App` 传入 `eventsMap`，瘦节点下依然能显示原始 diff 与输出首尾。
+- **判定单源**：`TurnNode` 删除本地 `isInputOnlyTurn` 复算，改用 `resolveTurnTone(turn)`，与小地图配色同源。
+- **常量拆名**：新增 `TURN_GRID`（360 / 4 / 280）与 `FLOW_LAYOUT`（280 / 6 / 340）显式区分，消除同名不同值误用。
+
+### 测试
+
+- 新增 `flowLayout.test.ts`（11）锁住坐标单调、折行边界、分支下沉与连线样式优先级；
+- 新增 `sessionTopology.test.ts`（17）覆盖会话归约、因果建链、多会话隔离、剪枝提取与瘦节点反向断言；
+- 新增 `gateManager.test.ts`（9）与 `gateDecisions.test.ts`（4）：门禁挂起 / 裁决 / 超时 / 替换 / 订阅，以及裁决信封构造。
+
+### 校验
+
+`pnpm test` 359 pass / 0 fail；`pnpm build` 零类型错误；`pnpm exec oxlint` 11 warning 未增。规约见 `openspec/changes/refactor-lean-node-view-model/`。
+
+## 未发布 — 运行时收敛、死代码清退与逻辑隐患收口 (2026-11-17)
+
+第三轮结构性收敛。清掉一个从未接线的 800 行页面、把造拓扑的逻辑收成单一实现、让首屏分包，并修掉三条会误伤真实使用的逻辑隐患。
+
+### 移除
+
+- `pages/SessionReplayPage.tsx`（800 行）：生产代码零引用的历史页面壳，回放能力早已并入主控制台时间轴；连带清理三条已下线页面的陈旧截图。
+- 零调用方导出 `toBridgeWsUrl` / `resolveBridgeBaseUrl`（YAGNI）。
+
+### 新增
+
+- **`src/services/flowLayout.ts`**：坐标、折行网格、连线样式与动画语义单一真源，实时流与回放共用；回放侧与实时侧不再各写一套边语义。
+- **`src/services/sessionTopology.ts`**：会话模型、因果建链、节点坐标、事件归约与演练剧本的纯逻辑层（1125 行），`useTelemetryStream` 从 1993 行瘦至 915 行，只留状态编排与副作用。
+- **`React.lazy` 按需加载**：`CompactorLabPage` / `ShowcasePage` 拆出独立 chunk，首屏 `index-*.js` 由 684.5 KB 降到 625.4 KB（gzip 210 → 189 KB）。
+- **节点渲染守卫**：`AgentNodeMemo` / `TurnNodeMemo`，只在 data 引用、选中态或 id 变化时重渲染。
+
+### 修复
+
+- **画布双渲染**：删除「派生 nodes/edges → setNodes」回写 effect，派生结果直喂 `<ReactFlow>`，拖拽位移改由轻量覆盖表承载，选中态由 `selectedNodeId` 单向注入。
+- **断言引擎跨会话串味**：失败指纹纳入 `sessionId` 作用域，A 会话的失败不再推动 B 会话熔断。
+- **失败计数语义**：由「累计失败」改为「连续失败」，同一目标重试成功即清零，避免修好后仍被历史计数推向熔断。
+- **失败指纹表有界**：新增 `maxTrackedSignatures`（默认 500，FIFO 淘汰），常驻进程内存不再单调增长。
+- **WAL 无上限**：新增 `maxWalEntries`（默认 500，FIFO 淘汰），统计口径如实反映存活条目。
+- **门禁无限挂起**：`GateManager` 增加兜底超时（默认 5 分钟），无人裁决时按安全策略返回 `reject` 裁决信封，与客户端 `timeout` 语义对齐。
+
+### 校验
+
+`pnpm test` 318 pass / 0 fail；`pnpm build` 零类型错误；`pnpm exec oxlint` 11 warning 未增。规约见 `openspec/changes/refactor-runtime-and-dead-code-retirement/`。
+
+## 未发布 — 编码审美底座收敛与反模式清洗 (2026-11-17)
+
+按 MIND.md 维度 3 与 SYSTEM_PROMPT 门禁 1 做的一轮结构性收敛。不动功能语义，只消维护成本：底座单点化、空 catch 清零、命令式 IO 剥离、双协议适配拆分、展示层色值收敛。
+
+### 新增
+
+- **`src/config/bridge.ts`**：桥接端口/主机/端点单一真源，`4560` 字面量从此只出现在这里；`resolveBridgePort` 支持 `PORT`/`HOST` 覆盖。
+- **`src/utils/http.ts`**：全仓唯一网络请求入口，`httpFetch` / `httpJson` / `httpText` / `httpPostSilent` 一律返回 `[err, data]` 并内建超时；12 处散落 `fetch` 收敛至此。
+- **`src/services/localSessionScanner.ts`**：本地存量会话扫描纯函数（`scanLocalSessions` / `readLocalTranscript`），以 `pathe` + `radash` 替代 4 层嵌套 `for` 与 11 处 sync fs 混排。
+- **`src/services/protocols/{shared,pi,claude}.ts`**：Pi / Claude 协议适配器分层，`transcriptParser.ts` 从 2315 行降到 1395 行，只留「分发 + 聚合 + 排版」。
+- **`src/services/statusTone.ts`**：画布状态语义色单一真源（`TONE_STROKE` / `TONE_FILL` / `BRANCH_EDGE_STYLE`），小地图配色 `switch` 从 App 与 Showcase 两处内联逻辑下沉为纯函数。
+- **`writeClipboard`**：剪贴板单一原语，替代 `telemetry.ts` 里两份近乎重复的实现。
+
+### 修复与清理
+
+- 非测试代码原生 `catch { /* ignore */ }` 清零（原 9 处），全部改 `radash.tryit` 解构 + 显式降级语义；`safeDecodeUri` 替掉 3 处 catch 内套 catch 的 URI 自愈。
+- 105 处 `typeof x === 'string'` 收敛为 `radash.isString`。
+- 删除 Vite 模板残留死资产 `react.svg` / `vite.svg` / `hero.png`。
+
+### 校验
+
+`pnpm test` 314 pass / 0 fail（新增 `localSessionScanner` 9 条与 `statusTone` 6 条契约用例）；`pnpm build` 零类型错误；`pnpm exec oxlint` 告警维持 11 条未增。规约见 `openspec/changes/refactor-aesthetic-base-convergence/`。
+
+## 未发布 — 门禁契约收口与演示沙盒隔离 (2026-11-17)
+
+这一版修的是最要命的一处语义漏洞：SDK 客户端读错了裁决字段，人类点「拒绝」也被当成批准，审批门禁在最通用的调用路径上形同虚设。同时把演示通路与真实工作流物理隔开。
+
+### 修复
+
+- **`reporter.gate()` 裁决解读回归**：改为解析服务端统一信封 `{ action, feedback, modifiedCommand }`，`reject` 正确回归 `rejected`，`modify` 回传人类改写的命令。此前读 `body.decision` 恒为 `undefined`，永远落`|| 'approved'`。
+- **审批载荷字段对齐**：上报 `command / explanation / diff`，与 `resolveGatePromptPayload` 的归一化契约一致。此前发 `action / summary / diffPayload`，审批窗里命令为空。
+- **等待裁决超时显式化**：新增 `gateTimeoutMs`（默认 5 分钟），超时返回 `timeout` 而不是静默放行；通信失败也不再谎报已批准。
+
+### 新增
+
+- **`demoOnly` 演示沙盒隔离**：遥测与门禁带该标记时，服务端强隔离到 `demo-` 会话命名空间，旁路 L1 断言（不写失败指纹、不触发共振熔断），UI 不自动抢占真实画布，演示门禁也不抢占真实审批模态窗。`createReporter` 默认开启。
+- **真实视口虚拟化**：画布开启 `onlyRenderVisibleElements`，只渲染视口内元素。
+- **回归用例** `src/client/reporter.gate.test.ts`：在线拒绝、批准、热纠偏、超时、demo 隔离、断言旁路 6 条契约用例，测试总数 299。
+- **门禁开关**：宿主扩展 `pi-netdive-bridge` 的高危命令拦截改为默认关闭（`NETDIVE_GATE_ENABLED` 未设时全放行，只观测不拦截），需物理拦截时显式开闸；`pnpm test:workflow` 演练流改用独立会话 ID，不再落入默认会话。
+
+### 文档
+
+- README 与 POSITIONING 口径对账：测试徽章 233 → 299；`OpenTelemetry 标准兼容` 改为实际做法的 `Active Span 式因果建链`；去掉并不存在的 Monaco 双列 Diff 描述。
+
 ## v0.2.0 — 上下文窗口观测 (2026-11-08)
 
 这一版把上下文观测从「一条静态水位色条」做成可读、可查、可对账的窗口面板，并把此前混淆真值与估算的假动作清掉。

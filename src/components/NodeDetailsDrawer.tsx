@@ -17,7 +17,7 @@ import {
 import type { Node } from '@xyflow/react'
 import type { AgentNodeData } from './AgentNode'
 import type { TelemetryEvent } from '../types/telemetry'
-import { normalizeObservationOutput, formatNodeSummary } from '../types/telemetry'
+import { normalizeObservationOutput, formatNodeSummary, writeClipboard } from '../types/telemetry'
 
 export interface NodeDetailsDrawerProps {
   isOpen: boolean
@@ -52,8 +52,9 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
   const isAggregated = event?.isAggregated ?? nodeData.isAggregated
   const aggregateCount = event?.aggregateCount ?? nodeData.aggregateCount
   const summary = event?.delta || nodeData.summary
-  const payload = event?.payload ?? nodeData.payload
-  const observation = event?.observation ?? nodeData.observation
+  // JIT 契约：详情一律取自 eventsMap 的原始事件，节点仅为瘦视图模型
+  const payload = event?.payload
+  const observation = event?.observation
 
   // 微压缩判定与数据提取 (Micro-Compactor Metrics)
   const isPruned = Boolean(event?.pruned ?? nodeData.pruned)
@@ -83,16 +84,11 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
 
   const copyPayload = async () => {
     if (!payload) return
-    const text = JSON.stringify(payload, null, 2)
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard) {
-        await navigator.clipboard.writeText(text)
-        setCopiedPayload(true)
-        setTimeout(() => setCopiedPayload(false), 2000)
-      }
-    } catch {
-      // ignore
-    }
+    const copied = await writeClipboard(JSON.stringify(payload, null, 2))
+    if (!copied) return
+
+    setCopiedPayload(true)
+    setTimeout(() => setCopiedPayload(false), 2000)
   }
 
   const isFailed =

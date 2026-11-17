@@ -22,7 +22,7 @@ import type {
   AssertionResult,
   TelemetryEvent,
 } from '../types/telemetry'
-import { normalizeObservationOutput, formatNodeSummary } from '../types/telemetry'
+import { formatNodeSummary } from '../types/telemetry'
 import { extractLandmarkLabel } from '../services/agentNodeLOD'
 
 export const AGENT_NODE_WIDTH = 280
@@ -52,6 +52,15 @@ export interface AgentNodeData {
   reclaimedTokens?: number
   walPointerId?: string
   aggregatedEvents?: TelemetryEvent[]
+  /** 瘦节点标量字段（见 services/nodeFacets.ts）：绝不承载完整 payload / observation */
+  command?: string
+  filePath?: string
+  pattern?: string
+  exitCode?: number
+  outputHead?: string
+  outputLineCount?: number
+  outputChars?: number
+  hasDiff?: boolean
   [key: string]: unknown
 }
 
@@ -84,7 +93,7 @@ export function extractBillboardText(nodeData: AgentNodeData): string {
 
   // 3. 针对命令行执行 (bash)：在 280px 卡片充裕空间下展现更完整的动宾命令与目标参数 (支持达 45~50 字符)
   if (nodeData.gesture === 'bash' && !landmark.startsWith('❌') && !landmark.startsWith('⚡')) {
-    const rawCmd = String(nodeData.payload?.command || nodeData.observation?.command || '').trim()
+    const rawCmd = String(nodeData.command || '').trim()
     const cleanCmd = (rawCmd || nodeData.title || '')
       .replace(/^bash:\s*/i, '')
       .replace(/^\$\s*/, '')
@@ -368,23 +377,23 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
       </div>
 
       {/* Observation 观测结果警示：若存在失败显示 exit: 1 提示 */}
-      {nodeData.observation && nodeData.observation.exitCode !== 0 && (
+      {typeof nodeData.exitCode === 'number' && nodeData.exitCode !== 0 && (
         <div className="mb-2 px-2 py-1 rounded bg-red-50/90 border border-red-200 text-red-800 flex items-center justify-between text-[10px] font-mono">
           <div className="flex items-center space-x-1 font-semibold text-red-700">
             <AlertCircle className="w-3 h-3 text-red-600 shrink-0" />
-            <span>exit: {nodeData.observation.exitCode}</span>
+            <span>exit: {nodeData.exitCode}</span>
           </div>
           <span
             className="text-[9px] text-red-600/90 truncate max-w-[130px]"
-            title={normalizeObservationOutput(nodeData.observation.output)[0]}
+            title={nodeData.outputHead}
           >
-            {normalizeObservationOutput(nodeData.observation.output)[0] || '断言异常'}
+            {nodeData.outputHead || '断言异常'}
           </span>
         </div>
       )}
 
       {/* Observation 观测结果通过提示 */}
-      {nodeData.observation && nodeData.observation.exitCode === 0 && (
+      {nodeData.exitCode === 0 && (
         <div className="mb-2 px-2 py-1 rounded bg-emerald-50/80 border border-emerald-200/80 text-emerald-800 flex items-center justify-between text-[10px] font-mono">
           <div className="flex items-center space-x-1 font-semibold text-emerald-700">
             <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
@@ -459,3 +468,18 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
     </div>
   )
 }
+
+/**
+ * 画布用节点渲染守卫：仅在节点自身数据引用、选中态或 id 变化时重渲染
+ * 长会话下每次遥测都会产出新的 nodes 数组，浅比较 data 引用即可拦截全量重绘
+ * 注意：`AgentNode` 保持纯函数组件导出（对外 SDK 契约与测试依赖其函数形态），
+ * memo 包装以 `AgentNodeMemo` 形态提供给 React Flow 的 nodeTypes 使用。
+ */
+export const AgentNodeMemo = React.memo(AgentNode, (prev, next) => {
+  return (
+    prev.id === next.id &&
+    prev.selected === next.selected &&
+    prev.data === next.data &&
+    prev.dragging === next.dragging
+  )
+})

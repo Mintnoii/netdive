@@ -19,7 +19,7 @@ import {
   Layers,
 } from 'lucide-react'
 import type { MacroTurnGroup, TelemetryEvent, TelemetryGesture } from '../types/telemetry'
-import { normalizeObservationOutput, formatNodeSummary } from '../types/telemetry'
+import { normalizeObservationOutput, formatNodeSummary, writeClipboard } from '../types/telemetry'
 
 export interface TurnDetailsDrawerProps {
   isOpen: boolean
@@ -55,15 +55,11 @@ export const TurnDetailsDrawer: React.FC<TurnDetailsDrawerProps> = ({
       : ev.observation?.output
         ? normalizeObservationOutput(ev.observation.output).join('\n')
         : ev.delta || ''
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard) {
-        await navigator.clipboard.writeText(text)
-        setCopiedStepIndex(idx)
-        setTimeout(() => setCopiedStepIndex(null), 2000)
-      }
-    } catch {
-      // ignore
-    }
+    const copied = await writeClipboard(text)
+    if (!copied) return
+
+    setCopiedStepIndex(idx)
+    setTimeout(() => setCopiedStepIndex(null), 2000)
   }
 
   // 节点手势图标映射

@@ -1,3 +1,4 @@
+import { TONE_STROKE } from '../services/statusTone'
 import React, { useMemo, useState } from 'react'
 import { Info, Eye, Zap } from 'lucide-react'
 import {
@@ -245,8 +246,8 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
 
         {/* 片段 3: Active Turns (subtle sky/indigo) */}
         <div
-          style={{ width: `${activePct}%` }}
-          className="h-full bg-[#6366F1] hover:brightness-105 transition-all duration-700 ease-out cursor-help"
+          style={{ width: `${activePct}%`, backgroundColor: TONE_STROKE.running }}
+          className="h-full hover:brightness-105 transition-all duration-700 ease-out cursor-help"
           onMouseEnter={() => setActiveTooltip('active')}
           onMouseLeave={() => setActiveTooltip(null)}
           title={`对话与思考 (Dialogue & Thinking): ${formatTokens(activeTurns)} (${Math.round(activePct)}%)`}
@@ -254,8 +255,8 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
 
         {/* 片段 4: Prunable Tools (amber/orange) */}
         <div
-          style={{ width: `${prunablePct}%` }}
-          className="h-full bg-[#F59E0B] hover:brightness-105 transition-all duration-700 ease-out cursor-help"
+          style={{ width: `${prunablePct}%`, backgroundColor: TONE_STROKE.gate }}
+          className="h-full hover:brightness-105 transition-all duration-700 ease-out cursor-help"
           onMouseEnter={() => setActiveTooltip('tools')}
           onMouseLeave={() => setActiveTooltip(null)}
           title={`工具输出与载荷 (Tool Payloads): ${formatTokens(prunableTools)} (${Math.round(prunablePct)}%)`}
@@ -295,7 +296,7 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
               activeTooltip && activeTooltip !== 'active' ? 'opacity-40' : 'opacity-100'
             }`}
           >
-            <span className="w-2 h-2 rounded-xs bg-[#6366F1] shrink-0" />
+            <span className="w-2 h-2 rounded-xs shrink-0" style={{ backgroundColor: TONE_STROKE.running }} />
             <span className="text-[#8F887D]">对话思考:</span>
             <span className="font-semibold text-[#1E2024]">{formatTokens(activeTurns)}</span>
           </div>
@@ -306,7 +307,7 @@ export const ContextStripBar: React.FC<ContextStripBarProps> = ({
               activeTooltip && activeTooltip !== 'tools' ? 'opacity-40' : 'opacity-100'
             }`}
           >
-            <span className="w-2 h-2 rounded-xs shrink-0 bg-[#F59E0B]" />
+            <span className="w-2 h-2 rounded-xs shrink-0" style={{ backgroundColor: TONE_STROKE.gate }} />
             <span className="text-[#8F887D]">工具载荷:</span>
             <span className="font-semibold text-[#1E2024]">
               {formatTokens(prunableTools)}

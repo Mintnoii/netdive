@@ -1,4 +1,5 @@
 import { basename } from 'pathe'
+import { isString } from 'radash'
 import type { AgentNodeData } from '../components/AgentNode'
 
 /**
@@ -30,7 +31,7 @@ export function calculateInverseScaleFactor(zoom: number): number {
  * // => '补齐类型声明以通过自动化单测'
  */
 export function extractRealIntent(text: string | undefined | null, fallback: string = '决策思考'): string {
-  if (!text || typeof text !== 'string') return fallback
+  if (!text || !isString(text)) return fallback
 
   // 1. 去除 Markdown 标记（标题符、引用符、列表符、代码块反引号、手势表情）
   let clean = text
@@ -119,7 +120,7 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
   if (
     nodeData.status === 'failed' ||
     nodeData.status === 'rejected' ||
-    (typeof nodeData.observation?.exitCode === 'number' && nodeData.observation.exitCode !== 0) ||
+    (typeof nodeData.exitCode === 'number' && nodeData.exitCode !== 0) ||
     (nodeData.assertion && !nodeData.assertion.passed)
   ) {
     if (nodeData.status === 'rejected') return '❌ 已拦截'
@@ -133,9 +134,7 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
 
   // 3. 剪枝节点
   if (nodeData.pruned) {
-    const targetPath = (nodeData.payload?.path ||
-      nodeData.payload?.file_path ||
-      nodeData.payload?.filePath) as string | undefined
+    const targetPath = nodeData.filePath
     if (targetPath) {
       return `✂️ ${basename(targetPath)}`
     }
@@ -168,22 +167,14 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
     const count = nodeData.aggregateCount || 2
 
     // 1) 优先提取明确的目标文件路径 (read / edit / file)
-    const targetPath = (nodeData.payload?.path ||
-      nodeData.payload?.file_path ||
-      nodeData.payload?.filePath ||
-      nodeData.payload?.file) as string | undefined
+    const targetPath = nodeData.filePath
     if (targetPath) {
       return `${basename(targetPath)} x${count}`
     }
 
     // 2) 针对 bash 命令行聚合，优先提取具体命令行首句或首词
     if (nodeData.gesture === 'bash') {
-      const rawCmd = String(
-        nodeData.payload?.command ||
-        (Array.isArray(nodeData.payload?.commands) ? (nodeData.payload.commands as string[])[0] : '') ||
-        nodeData.observation?.command ||
-        ''
-      ).trim()
+      const rawCmd = String(nodeData.command || '').trim()
 
       const cleanCmd = (rawCmd || nodeData.title || '')
         .replace(/\s*\(x\d+\)\s*$/i, '')
@@ -216,23 +207,15 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
       }
     }
 
-    // 4) 从子调用列表中嗅探首个子操作的目标实体
-    if (Array.isArray(nodeData.payload?.subCalls) && (nodeData.payload.subCalls as Record<string, unknown>[]).length > 0) {
-      const firstSubCall = (nodeData.payload.subCalls as Record<string, unknown>[])[0]
-      const subPath = (firstSubCall.payload as Record<string, unknown> | undefined)?.path as string | undefined
-      if (subPath) {
-        return `${basename(subPath)} x${count}`
-      }
-      const subCmd = String(
-        (firstSubCall.payload as Record<string, unknown> | undefined)?.command ||
-        (firstSubCall.observation as Record<string, unknown> | undefined)?.command ||
-        ''
-      ).trim()
-      if (subCmd) {
-        const cleanSub = subCmd.replace(/^\$\s*/, '').split(/[\r\n]+/)[0].trim()
-        if (cleanSub.length <= 32) return `$ ${cleanSub} x${count}`
-        return `$ ${cleanSub.slice(0, 30)}... x${count}`
-      }
+    // 4) 依据瘦节点标量还原具体目标实体（不再读嵌套 payload.subCalls）
+    if (nodeData.filePath) {
+      return `${basename(nodeData.filePath)} x${count}`
+    }
+
+    if (nodeData.command) {
+      const cleanSub = nodeData.command.replace(/^\$\s*/, '').split(/[\r\n]+/)[0].trim()
+      if (cleanSub.length <= 32) return `$ ${cleanSub} x${count}`
+      return `$ ${cleanSub.slice(0, 30)}... x${count}`
     }
 
     // 5) 兜底依据手势给出具象动作而不是死板抽象名词
@@ -245,17 +228,14 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
 
   // 5. 文件类型提取清晰的文件名 (read / edit)
   if (nodeData.gesture === 'read' || nodeData.gesture === 'edit') {
-    const targetPath = (nodeData.payload?.path ||
-      nodeData.payload?.file_path ||
-      nodeData.payload?.filePath ||
-      nodeData.payload?.file) as string | undefined
+    const targetPath = nodeData.filePath
 
     if (targetPath) {
       return basename(targetPath)
     }
 
-    if (typeof nodeData.payload?.pattern === 'string') {
-      return `🔍 ${nodeData.payload.pattern}`
+    if (isString(nodeData.pattern)) {
+      return `🔍 ${nodeData.pattern}`
     }
 
     // 从 title 中提取路径 (如 read: src/components/AgentNode.tsx 或 edit: package.json)
@@ -275,7 +255,7 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
 
   // 6. 命令类型提取 $ 命令首词 (bash)
   if (nodeData.gesture === 'bash') {
-    const rawCmd = String(nodeData.payload?.command || nodeData.observation?.command || '').trim()
+    const rawCmd = String(nodeData.command || '').trim()
     const cleanCmd = (rawCmd || nodeData.title || '')
       .replace(/^bash:\s*/i, '')
       .replace(/^\$\s*/, '')
@@ -296,8 +276,8 @@ export function extractLandmarkLabel(nodeData: AgentNodeData): string {
   // 8. 思考与推理 (think) - 优先提纯真实意图，杜绝空洞套话
   if (nodeData.gesture === 'think') {
     const rawText =
-      (typeof nodeData.delta === 'string' && nodeData.delta.trim()) ||
-      (typeof nodeData.summary === 'string' && nodeData.summary.trim()) ||
+      (isString(nodeData.delta) && nodeData.delta.trim()) ||
+      (isString(nodeData.summary) && nodeData.summary.trim()) ||
       nodeData.title ||
       ''
 

@@ -1,7 +1,8 @@
 import { startBridgeServer } from './bridge'
+import { resolveBridgeHost, resolveBridgePort } from '../config/bridge'
 
-const PORT = Number(process.env.PORT || 4560)
-const HOST = process.env.HOST || '127.0.0.1'
+const PORT = resolveBridgePort()
+const HOST = resolveBridgeHost()
 
 async function main() {
   const instance = await startBridgeServer({ port: PORT, host: HOST })

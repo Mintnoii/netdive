@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseTranscript } from './transcriptParser'
-import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from './sampleTranscript'
+import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from '../fixtures/sampleTranscript'
 import type { ContextPartKind, ContextPrompt } from '../types/telemetry'
 
 const EXPECTED_PART_ORDER: ContextPartKind[] = [

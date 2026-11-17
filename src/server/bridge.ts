@@ -1,23 +1,24 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { tryit } from 'radash'
-import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { resolve, join } from 'pathe'
+import { tryit , isString } from 'radash'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket, type NodeWebSocket } from '@hono/node-ws'
 import { WebSocket } from 'ws'
 import type {
+  AssertionResult,
   GateDecision,
   GatePromptPayload,
   TelemetryEvent,
 } from '../types/telemetry'
 import {
   normalizeTelemetryObservation,
+  toDemoIsolatedSessionId,
 } from '../types/telemetry'
 import { GateManager } from '../services/gateManager'
 import { AssertionEngine, assertionEngine as defaultAssertionEngine } from '../services/assertionEngine'
 import { MicroCompactor, microCompactor as defaultMicroCompactor } from '../services/microCompactor'
+import { readLocalTranscript, scanLocalSessions } from '../services/localSessionScanner'
+import { resolveBridgeHost, resolveBridgePort } from '../config/bridge'
 
 export interface BridgeServerOptions {
   port?: number
@@ -44,6 +45,20 @@ export interface RunningBridgeServer extends BridgeAppInstance {
 }
 
 /**
+ * 演示事件的断言旁路结果
+ * 演示流绝不进入 L1 断言引擎，从源头保障真实会话的失败指纹与共振熔断不被污染
+ */
+export const DEMO_BYPASS_ASSERTION: AssertionResult = {
+  passed: true,
+  triggerSelfCorrection: false,
+  triggerGate: false,
+  severity: 'info',
+  reason: 'Demo-only event: L1 Deterministic Assertion bypassed to protect live session state.',
+  rule: 'demo_bypass',
+  failureCount: 0,
+}
+
+/**
  * 统一提取并规约 GatePromptPayload 强契约
  * 声明式解构，消除 45 行嵌套三元与 'key' in body 猜谜
  */
@@ -51,12 +66,14 @@ export function resolveGatePromptPayload(body: Record<string, unknown>): GatePro
   const inner = (body.gatePayload as Partial<GatePromptPayload>) || {}
   const rawAction = (inner.proposedAction || body.proposedAction || {}) as Record<string, unknown>
 
-  const gateId = String(inner.gateId || body.gateId || `gate-${Date.now()}`)
+  const demoOnly = Boolean(inner.demoOnly ?? body.demoOnly ?? body.demo ?? false)
+  const rawGateId = String(inner.gateId || body.gateId || `gate-${Date.now()}`)
+  const gateId = demoOnly && !rawGateId.startsWith('demo-') ? `demo-${rawGateId}` : rawGateId
   const title = String(inner.title || body.title || '决策门禁待审 (HITL)')
   const riskLevel = (inner.riskLevel === 'critical' || body.riskLevel === 'critical') ? 'critical' : 'high'
 
   const command = String(rawAction.command || body.command || '')
-  const diff = typeof rawAction.diff === 'string' ? rawAction.diff : typeof body.diff === 'string' ? body.diff : undefined
+  const diff = isString(rawAction.diff) ? rawAction.diff : isString(body.diff) ? body.diff : undefined
   const explanation = String(
     rawAction.explanation ||
     body.explanation ||
@@ -64,13 +81,14 @@ export function resolveGatePromptPayload(body: Record<string, unknown>): GatePro
   )
 
   const timestamp =
-    typeof inner.timestamp === 'string'
+    isString(inner.timestamp)
       ? inner.timestamp
-      : typeof body.timestamp === 'string'
+      : isString(body.timestamp)
         ? body.timestamp
         : new Date().toISOString()
 
-  const sessionId = (inner.sessionId || body.sessionId || body.session_id) as string | undefined
+  const rawSessionId = (inner.sessionId || body.sessionId || body.session_id) as string | undefined
+  const sessionId = demoOnly ? toDemoIsolatedSessionId(rawSessionId) : rawSessionId?.trim() || undefined
   const sessionTitle = (inner.sessionTitle || body.sessionTitle) as string | undefined
   const project = (inner.project || body.project) as string | undefined
   const actor = (inner.actor || body.actor) as string | undefined
@@ -78,6 +96,7 @@ export function resolveGatePromptPayload(body: Record<string, unknown>): GatePro
   return {
     gateId,
     title,
+    demoOnly,
     riskLevel,
     proposedAction: {
       command,
@@ -85,7 +104,7 @@ export function resolveGatePromptPayload(body: Record<string, unknown>): GatePro
       explanation,
     },
     timestamp,
-    sessionId: sessionId?.trim() || undefined,
+    sessionId,
     sessionTitle: sessionTitle?.trim() || undefined,
     project: project?.trim() || undefined,
     actor: actor?.trim() || undefined,
@@ -117,7 +136,7 @@ export function createBridgeApp(options: {
    * 声明式集合过滤分发，消除命令式 for 循环与可变计数器
    */
   const broadcast = (data: TelemetryEvent | Record<string, unknown>): number => {
-    const raw = typeof data === 'string' ? data : JSON.stringify(data)
+    const raw = isString(data) ? data : JSON.stringify(data)
     const activeClients = Array.from(wss.clients).filter((c) => c.readyState === WebSocket.OPEN)
     activeClients.forEach((client) => client.send(raw))
     return activeClients.length
@@ -149,13 +168,20 @@ export function createBridgeApp(options: {
 
     // 强契约规范化 TelemetryObservation
     const normalizedObs = normalizeTelemetryObservation(rawEvent.observation)
+
+    // 演示标记直给：演示流旁路 L1 断言并强制隔离到 demo- 会话，绝不影响真实活跃会话
+    const demoOnly = Boolean(rawEvent.demoOnly || ('demo' in body && body.demo))
     const event: TelemetryEvent = {
       ...rawEvent,
+      demoOnly,
+      sessionId: demoOnly ? toDemoIsolatedSessionId(rawEvent.sessionId) : rawEvent.sessionId,
       observation: normalizedObs,
     }
 
     // L1 确定性断言引擎判定 (L1 Deterministic Assertion)
-    const assertion = event.assertion || assertionEngine.evaluate(event)
+    const assertion = demoOnly
+      ? DEMO_BYPASS_ASSERTION
+      : event.assertion || assertionEngine.evaluate(event)
 
     // 在决定节点状态与拓扑分叉前进行断言介入
     let finalStatus = event.status
@@ -175,7 +201,7 @@ export function createBridgeApp(options: {
           riskLevel: 'critical',
           proposedAction: {
             command:
-              (typeof event.payload?.command === 'string' ? event.payload.command : undefined) ||
+              (isString(event.payload?.command) ? event.payload.command : undefined) ||
               event.title ||
               'High-Risk / Resonance Action',
             explanation: assertion.reason || 'L1 Assertion Engine 检测到需要人类决策门禁介入',
@@ -245,13 +271,13 @@ export function createBridgeApp(options: {
       const gatePayload = resolveGatePromptPayload(body)
       const decisionPromise = gateManager.registerGate(gatePayload)
 
-      const nodeId = (typeof body.nodeId === 'string' && body.nodeId) || gatePayload.gateId
-      const parentId = typeof body.parentId === 'string' ? body.parentId : undefined
+      const nodeId = (isString(body.nodeId) && body.nodeId) || gatePayload.gateId
+      const parentId = isString(body.parentId) ? body.parentId : undefined
       const isCorrectionBranch = Boolean(body.isCorrectionBranch)
       const observation = normalizeTelemetryObservation(body.observation)
-      const actor = (typeof body.actor === 'string' ? body.actor : 'Human Operator') as TelemetryEvent['actor']
-      const sessionId = gatePayload.sessionId || (typeof body.sessionId === 'string' ? body.sessionId : undefined)
-      const traceId = (typeof body.traceId === 'string' && body.traceId) || sessionId || gatePayload.gateId
+      const actor = (isString(body.actor) ? body.actor : 'Human Operator') as TelemetryEvent['actor']
+      const sessionId = gatePayload.sessionId || (isString(body.sessionId) ? body.sessionId : undefined)
+      const traceId = (isString(body.traceId) && body.traceId) || sessionId || gatePayload.gateId
 
       // 广播 gate_prompt 遥测事件给前端画布，触发挂起与居中审批模态窗
       const promptEvent: TelemetryEvent = {
@@ -267,6 +293,7 @@ export function createBridgeApp(options: {
         title: gatePayload.title,
         status: 'gate',
         gatePayload,
+        demoOnly: gatePayload.demoOnly,
         isCorrectionBranch,
         observation,
         timestamp: Date.now(),
@@ -326,6 +353,7 @@ export function createBridgeApp(options: {
       gesture: 'gate',
       actor: 'Human Operator',
       gateDecision: body.decision,
+      demoOnly: existingGate?.demoOnly,
       status: body.decision.action === 'reject' ? 'rejected' : 'completed',
       timestamp: Date.now(),
     }
@@ -381,145 +409,20 @@ export function createBridgeApp(options: {
   // 9. 探测本地 Pi / Claude 真实存量会话，并快速提取人类意图真名 (GET /api/sessions/local)
   app.get('/api/sessions/local', (c) => {
     const limit = Number(c.req.query('limit') || 30)
-    const baseDir = resolve(homedir(), '.pi/agent/sessions')
-
-    if (!existsSync(baseDir)) {
-      return c.json({ ok: true, sessions: [] })
-    }
-
-    const [err, entries] = tryit(() => {
-      const folders = readdirSync(baseDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .map((d) => d.name)
-
-      const allFiles: {
-        id: string
-        fileName: string
-        title: string
-        lineCount: number
-        folder: string
-        fullPath: string
-        mtime: number
-        size: number
-        project: string
-      }[] = []
-
-      for (const folder of folders) {
-        const folderPath = join(baseDir, folder)
-        const projectMatch =
-          folder.match(/Desktop-([A-Za-z0-9_-]+)--/) ||
-          folder.match(/workspaces-([A-Za-z0-9_-]+)--/)
-        const project = projectMatch ? projectMatch[1] : folder.replace(/^-+|-+$/g, '')
-
-        const files = readdirSync(folderPath).filter((f) => f.endsWith('.jsonl'))
-
-        for (const f of files) {
-          const p = join(folderPath, f)
-          const st = statSync(p)
-          const idMatch = f.match(/([0-9a-fA-F-]{36})\.jsonl$/)
-          const id = idMatch ? idMatch[1] : f.replace(/\.jsonl$/, '')
-
-          // 轻量快速流式探测前 20 行，精准提取人类首问意图或标题，并统计真实有效事件行数
-          let sessionTitle = f.replace(/\.jsonl$/, '')
-          let actualLineCount = 0
-
-          try {
-            const rawHead = readFileSync(p, 'utf-8')
-            const allLines = rawHead.split(/\r?\n/).filter((l) => l.trim().length > 0)
-            actualLineCount = allLines.length
-
-            for (let i = 0; i < Math.min(allLines.length, 30); i++) {
-              const line = allLines[i]
-              try {
-                const item = JSON.parse(line)
-                if (item.type === 'session' && typeof item.title === 'string' && item.title.trim()) {
-                  sessionTitle = item.title.trim()
-                  break
-                }
-                if (item.type === 'message' && item.message?.role === 'user') {
-                  const content = item.message.content
-                  let text = ''
-                  if (typeof content === 'string') {
-                    text = content
-                  } else if (Array.isArray(content)) {
-                    text = content.map((c: { text?: string }) => c.text || '').join('')
-                  }
-                  if (text.trim()) {
-                    const cleanFirstLine = text.trim().split(/\r?\n/)[0].trim()
-                    if (cleanFirstLine && !cleanFirstLine.startsWith('{') && cleanFirstLine.length > 1) {
-                      sessionTitle = cleanFirstLine.length > 38 ? `${cleanFirstLine.slice(0, 36)}...` : cleanFirstLine
-                      break
-                    }
-                  }
-                }
-              } catch {
-                // ignore
-              }
-            }
-          } catch {
-            // ignore
-          }
-
-          allFiles.push({
-            id,
-            fileName: f,
-            title: sessionTitle,
-            lineCount: actualLineCount,
-            folder,
-            fullPath: p,
-            mtime: st.mtimeMs,
-            size: st.size,
-            project,
-          })
-        }
-      }
-
-      // 按修改时间倒序排序，取前 N 个
-      return allFiles.sort((a, b) => b.mtime - a.mtime).slice(0, limit)
-    })()
-
-    if (err) {
-      return c.json({ ok: false, error: err.message }, 500)
-    }
-
-    return c.json({
-      ok: true,
-      sessions: entries || [],
-    })
+    const sessions = scanLocalSessions(limit)
+    return c.json({ ok: true, sessions })
   })
 
   // 10. 读取单个本地存量会话的完整因果拓扑 (GET /api/sessions/local/:id/transcript)
   app.get('/api/sessions/local/:id/transcript', (c) => {
     const sessionId = c.req.param('id')
-    const baseDir = resolve(homedir(), '.pi/agent/sessions')
+    const raw = readLocalTranscript(sessionId)
 
-    if (!existsSync(baseDir)) {
-      return c.json({ ok: false, error: 'Sessions directory not found' }, 404)
-    }
-
-    const [findErr, targetFile] = tryit(() => {
-      const folders = readdirSync(baseDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .map((d) => d.name)
-
-      for (const folder of folders) {
-        const folderPath = join(baseDir, folder)
-        const match = readdirSync(folderPath).find(
-          (f) => f.includes(sessionId) && f.endsWith('.jsonl')
-        )
-        if (match) {
-          return join(folderPath, match)
-        }
-      }
-      return null
-    })()
-
-    if (findErr || !targetFile || !existsSync(targetFile)) {
+    // 全量回传完整历史流水，交由下游 transcriptParser 治理巨型负载
+    if (raw === null) {
       return c.json({ ok: false, error: `Session transcript for ${sessionId} not found` }, 404)
     }
 
-    // 全量读取并回传完整历史流水（不再暴力截断前 150 步，交由下游 transcriptParser 精准治理巨型二进制）
-    const raw = readFileSync(targetFile, 'utf-8')
     return c.text(raw)
   })
 
@@ -541,7 +444,7 @@ export function createBridgeApp(options: {
           )
         },
         onMessage(event, ws) {
-          const text = typeof event.data === 'string' ? event.data : event.data.toString()
+          const text = isString(event.data) ? event.data : event.data.toString()
           if (!text.trim().startsWith('{')) return
 
           const [jsonErr, data] = tryit(JSON.parse)(text) as [Error | undefined, Record<string, unknown>]
@@ -568,6 +471,7 @@ export function createBridgeApp(options: {
                 gesture: 'gate',
                 actor: 'Human Operator',
                 gateDecision: data.decision as GateDecision,
+                demoOnly: existingGate?.demoOnly,
                 status: (data.decision as GateDecision).action === 'reject' ? 'rejected' : 'completed',
                 timestamp: Date.now(),
               } satisfies TelemetryEvent)
@@ -605,8 +509,8 @@ export function createBridgeApp(options: {
  * 启动 NetDive Local Sidecar Bridge 监听服务
  */
 export function startBridgeServer(options: BridgeServerOptions = {}): Promise<RunningBridgeServer> {
-  const port = options.port || Number(process.env.PORT || 4560)
-  const host = options.host || process.env.HOST || '127.0.0.1'
+  const port = resolveBridgePort(options.port)
+  const host = resolveBridgeHost(options.host)
   const appInstance = createBridgeApp({
     gateManager: options.gateManager,
     assertionEngine: options.assertionEngine,

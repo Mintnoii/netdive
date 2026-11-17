@@ -13,7 +13,7 @@ import {
   extractRealIntent,
   extractUsageFromRecord,
 } from './transcriptParser'
-import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from './sampleTranscript'
+import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from '../fixtures/sampleTranscript'
 import { resolveContextWindow } from './modelWindows'
 import type { TelemetryEvent, MacroTurnGroup } from '../types/telemetry'
 
@@ -1138,11 +1138,6 @@ describe('NetDive Transcript Parser Engine', () => {
       assert.equal(foldedRatio, 0.5)
       assert.equal(unfoldedStep, 25)
       assert.equal(unfoldedStep / unfoldedTotal, 0.5)
-    })
-
-    it('exports SessionReplayPage component wrapped with ReactFlowProvider', async () => {
-      const { SessionReplayPage } = await import('../pages/SessionReplayPage')
-      assert.equal(typeof SessionReplayPage, 'function')
     })
   })
 

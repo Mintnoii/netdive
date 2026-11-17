@@ -1,4 +1,5 @@
 import type { TelemetryObservation } from '../types/telemetry'
+import { isString } from 'radash'
 import { normalizeObservationOutput } from '../types/telemetry'
 
 /**
@@ -121,7 +122,11 @@ export interface MicroCompactorOptions {
   headLinesCount?: number // 默认 15 行
   tailLinesCount?: number // 默认 15 行
   pointerPrefix?: string // 默认 'wal-call-'
+  maxWalEntries?: number // 默认 500，超出按 FIFO 淘汰
 }
+
+/** WAL 注册表默认容量上限（超出按插入顺序淘汰最旧指针，保证常驻进程内存有界） */
+export const DEFAULT_MAX_WAL_ENTRIES = 500
 
 /** 默认常量配置 */
 export const DEFAULT_MAX_LINES_THRESHOLD = 40
@@ -209,7 +214,7 @@ function resolveOutputPayload(output: string | string[]): {
     }
   }
 
-  const rawText = typeof output === 'string' ? output : String(output ?? '')
+  const rawText = isString(output) ? output : String(output ?? '')
   const lines = rawText.includes('\n') ? rawText.split('\n') : [rawText]
   return {
     lines,
@@ -242,14 +247,14 @@ function normalizeOutputToLines(payload: { lines: string[]; totalChars: number }
   // 若总行数 <= 30 但总字符数 > 1500，按保证产生 > 30 行的步长对超长行分块，确保有效折叠
   if (lines.length <= 30 && totalChars > DEFAULT_MAX_CHARS_THRESHOLD) {
     const chunkSize = Math.min(50, Math.max(10, Math.floor(totalChars / 32)))
-    return lines.flatMap((line) => {
-      if (line.length <= chunkSize) return [line]
-      const chunks: string[] = []
-      for (let i = 0; i < line.length; i += chunkSize) {
-        chunks.push(line.slice(i, i + chunkSize))
-      }
-      return chunks
-    })
+    return lines.flatMap((line) =>
+      line.length <= chunkSize
+        ? [line]
+        : // 声明式切片：按固定长度生成窗口下标，杜绝游标式累加
+          Array.from({ length: Math.ceil(line.length / chunkSize) }, (_, index) =>
+            line.slice(index * chunkSize, (index + 1) * chunkSize)
+          )
+    )
   }
 
   return lines
@@ -342,6 +347,7 @@ export class MicroCompactor {
       headLinesCount: options.headLinesCount ?? DEFAULT_HEAD_LINES,
       tailLinesCount: options.tailLinesCount ?? DEFAULT_TAIL_LINES,
       pointerPrefix: options.pointerPrefix ?? DEFAULT_POINTER_PREFIX,
+      maxWalEntries: options.maxWalEntries ?? DEFAULT_MAX_WAL_ENTRIES,
     }
   }
 
@@ -359,6 +365,18 @@ export class MicroCompactor {
   clearWal(): void {
     this.walRegistry.clear()
     this.counter = 0
+  }
+
+  /**
+   * 容量治理：超过上限时按插入顺序淘汰最旧指针（FIFO）
+   * 统计口径仍如实反映当前存活条目，不伪造累计值
+   */
+  private evictOverflowWalEntries(): void {
+    while (this.walRegistry.size > this.options.maxWalEntries) {
+      const oldestKey = this.walRegistry.keys().next().value
+      if (oldestKey === undefined) return
+      this.walRegistry.delete(oldestKey)
+    }
   }
 
   /**
@@ -474,6 +492,7 @@ export class MicroCompactor {
     }
 
     this.walRegistry.set(pointerId, walRecord)
+    this.evictOverflowWalEntries()
 
     const pointerContext: CompactPointerContext = {
       pointerId,
@@ -738,9 +757,9 @@ export class MicroCompactor {
    * 将 System Prompt 与 LTM 边界进行规范化序列化并锁定哈希
    */
   createPrefixBoundary(systemPrompt: string, ltm: string | unknown): CachePrefixBoundary {
-    const canonicalSystem = typeof systemPrompt === 'string' ? systemPrompt : String(systemPrompt || '')
+    const canonicalSystem = isString(systemPrompt) ? systemPrompt : String(systemPrompt || '')
     const canonicalLtm =
-      typeof ltm === 'string'
+      isString(ltm)
         ? ltm
         : ltm !== undefined && ltm !== null
           ? JSON.stringify(ltm)
@@ -765,8 +784,8 @@ export class MicroCompactor {
     original: CachePrefixBoundary | string,
     candidate: CachePrefixBoundary | string
   ): { stable: boolean; diffDetails?: string } {
-    const rawOriginal = typeof original === 'string' ? original : original.rawCanonical
-    const rawCandidate = typeof candidate === 'string' ? candidate : candidate.rawCanonical
+    const rawOriginal = isString(original) ? original : original.rawCanonical
+    const rawCandidate = isString(candidate) ? candidate : candidate.rawCanonical
 
     if (rawOriginal === rawCandidate) {
       return { stable: true }
@@ -832,7 +851,7 @@ export class MicroCompactor {
     // 仅处理活跃轮次中的工具输出
     const compactedTurns: ConversationMessage[] = turns.map((turn) => {
       // 若当前轮次是工具回包 (role === 'tool' 或 content 中含有 tool_result)
-      if (turn.role === 'tool' && typeof turn.content === 'string') {
+      if (turn.role === 'tool' && isString(turn.content)) {
         if (isCompactionNeeded(turn.content, this.options)) {
           const res = this.compactToolOutput(turn.content, {
             toolCallId: turn.tool_call_id || turn.id,

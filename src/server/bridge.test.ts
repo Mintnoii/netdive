@@ -1,7 +1,8 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
-import { startBridgeServer, type RunningBridgeServer } from './bridge'
+import { serve } from '@hono/node-server'
+import { createBridgeApp, startBridgeServer, type RunningBridgeServer } from './bridge'
 import type { TelemetryEvent, GateDecision, ContextWatermark } from '../types/telemetry'
 import { DEFAULT_CONTEXT_WATERMARK } from '../types/telemetry'
 
@@ -560,7 +561,7 @@ describe('Context Watermark & Token Utilities', () => {
 describe('Prunable Context Inspector & Stream Pause/Resume Control', () => {
   it('parseTranscript marks watermark provenance counted when usage exists and estimated otherwise', async () => {
     const { parseTranscript } = await import('../services/transcriptParser')
-    const { REALISTIC_PI_TRANSCRIPT_SAMPLE } = await import('../services/sampleTranscript')
+    const { REALISTIC_PI_TRANSCRIPT_SAMPLE } = await import('../fixtures/sampleTranscript')
 
     // 1. 带真实 usage 的 JSONL -> counted
     const withUsageJsonl = [
@@ -1012,6 +1013,30 @@ describe('Context provenance 正交标注契约 (M3)', () => {
   })
 })
 
+describe('Gate 服务端兜底超时', () => {
+  it('无人裁决时按超时拦截，绝不无限挂起调用方', async () => {
+    const { GateManager } = await import('../services/gateManager')
+    const quickManager = new GateManager(120)
+    const app = createBridgeApp({ gateManager: quickManager })
+    const server = serve({ fetch: app.app.fetch, port: 4589, hostname: TEST_HOST })
+    await new Promise((r) => setTimeout(r, 150))
 
+    try {
+      const started = Date.now()
+      const res = await fetch(`http://${TEST_HOST}:4589/api/gate/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gateId: 'gate-timeout-1', nodeId: 'node-timeout-1', command: 'rm -rf /tmp/x' }),
+      })
+      const decision = (await res.json()) as GateDecision
+      const elapsed = Date.now() - started
 
-
+      assert.equal(decision.action, 'reject', '超时按安全策略拦截')
+      assert.match(decision.feedback || '', /超时/)
+      assert.ok(elapsed >= 100, `应在超时阈值后才返回，实际 ${elapsed}ms`)
+      assert.equal(app.gateManager.hasPendingGates(), false, '超时后不残留挂起门禁')
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+})

@@ -46,7 +46,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
         gesture: 'read',
         title: '读取App源码',
         status: 'completed',
-        payload: { path: 'src/App.tsx' },
+        filePath: 'src/App.tsx',
       }
       assert.equal(extractBillboardText(readNode), '📄 App.tsx')
 
@@ -54,7 +54,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
         gesture: 'edit',
         title: '修改样式',
         status: 'completed',
-        payload: { file_path: 'src/components/AgentNode.tsx' },
+        filePath: 'src/components/AgentNode.tsx',
       }
       assert.equal(extractBillboardText(editNode), '📄 AgentNode.tsx')
 
@@ -63,7 +63,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
         gesture: 'bash',
         title: '执行单测',
         status: 'completed',
-        payload: { command: 'pnpm test' },
+        command: 'pnpm test',
       }
       assert.equal(extractBillboardText(bashNode), '$ pnpm test')
 
@@ -89,7 +89,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
         title: '修剪冗余节点',
         status: 'completed',
         pruned: true,
-        payload: { path: 'debug.log' },
+        filePath: 'debug.log',
       }
       assert.equal(extractBillboardText(prunedNode), '✂️ debug.log')
     })
@@ -111,7 +111,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
         gesture: 'bash',
         title: '执行单测',
         status: 'completed',
-        payload: { command: 'pnpm test src/components/AgentNode.test.ts' },
+        command: 'pnpm test src/components/AgentNode.test.ts',
       }
       assert.equal(extractBillboardText(longBashNode), '$ pnpm test src/components/AgentNode.test.ts')
     })
@@ -198,15 +198,13 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
         assert.equal(extractLandmarkLabel(data), '❌ 已拦截')
       })
 
-      it('当 observation.exitCode !== 0 时哪怕 title 正常亦强制提取 ❌ 报错', () => {
+      it('当 exitCode !== 0 时哪怕 title 正常亦强制提取 ❌ 报错', () => {
         const data: AgentNodeData = {
           gesture: 'bash',
           title: '执行构建',
           status: 'completed',
-          observation: {
-            exitCode: 1,
-            output: ['Error: Build failed'],
-          },
+          exitCode: 1,
+          outputHead: 'Error: Build failed',
         }
         assert.equal(extractLandmarkLabel(data), '❌ 报错')
       })
@@ -269,7 +267,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
           isAggregated: true,
           aggregateCount: 3,
           status: 'completed',
-          payload: { path: 'src/hooks/useTelemetryStream.ts' },
+          filePath: 'src/hooks/useTelemetryStream.ts',
         }
         assert.equal(extractLandmarkLabel(fileAgg), 'useTelemetryStream.ts x3')
 
@@ -280,7 +278,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
           isAggregated: true,
           aggregateCount: 3,
           status: 'completed',
-          payload: { command: 'orca orchestration check' },
+          command: 'orca orchestration check',
         }
         assert.equal(extractLandmarkLabel(bashAgg), '$ orca orchestration check x3')
 
@@ -297,26 +295,22 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
     })
 
     describe('3.3 文件类型：提纯清晰的文件名', () => {
-      it('从 payload.path 提取 basename 文件名', () => {
+      it('从 filePath 标量提取 basename 文件名', () => {
         const data: AgentNodeData = {
           gesture: 'read',
           title: '读取前端拓扑组件源码',
           status: 'completed',
-          payload: {
-            path: 'src/components/AgentNode.tsx',
-          },
+          filePath: 'src/components/AgentNode.tsx',
         }
         assert.equal(extractLandmarkLabel(data), 'AgentNode.tsx')
       })
 
-      it('从 payload.file_path 提取 basename 文件名', () => {
+      it('从 filePath 标量提取历史 file_path 同义路径', () => {
         const data: AgentNodeData = {
           gesture: 'edit',
           title: '打补丁修复流水线',
           status: 'completed',
-          payload: {
-            file_path: 'packages/core/src/pipeline.ts',
-          },
+          filePath: 'packages/core/src/pipeline.ts',
         }
         assert.equal(extractLandmarkLabel(data), 'pipeline.ts')
       })
@@ -342,23 +336,19 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
           gesture: 'read',
           title: '代码符号检索',
           status: 'completed',
-          payload: {
-            pattern: 'useTelemetryStream',
-          },
+          pattern: 'useTelemetryStream',
         }
         assert.equal(extractLandmarkLabel(data), '🔍 useTelemetryStream')
       })
     })
 
     describe('3.4 命令类型：提纯 $ 命令首词', () => {
-      it('从 payload.command 中提取首词并附带 $ 符号', () => {
+      it('从 command 标量提取首词并附带 $ 符号', () => {
         const data: AgentNodeData = {
           gesture: 'bash',
           title: '执行单元测试',
           status: 'completed',
-          payload: {
-            command: 'pnpm test:pipeline --run',
-          },
+          command: 'pnpm test:pipeline --run',
         }
         assert.equal(extractLandmarkLabel(data), '$ pnpm')
       })
@@ -368,9 +358,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
           gesture: 'bash',
           title: '调度 Worker',
           status: 'completed',
-          payload: {
-            command: 'orca orchestration worker-start --agent claude',
-          },
+          command: 'orca orchestration worker-start --agent claude',
         }
         assert.equal(extractLandmarkLabel(data), '$ orca')
       })
@@ -380,14 +368,12 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
           gesture: 'bash',
           title: '查看变更',
           status: 'completed',
-          payload: {
-            command: 'git status --porcelain',
-          },
+          command: 'git status --porcelain',
         }
         assert.equal(extractLandmarkLabel(data), '$ git')
       })
 
-      it('当 payload 无 command 时自动从 title 中提取 $ 命令首词', () => {
+      it('当无 command 标量时自动从 title 中提取 $ 命令首词', () => {
         const data: AgentNodeData = {
           gesture: 'bash',
           title: 'bash: cargo build --release',
@@ -469,7 +455,7 @@ describe('AgentNode 1+2 混合方案与固定 w-[280px] 卡片物理守恒测试
             title: '修剪冗余节点',
             status: 'completed',
             pruned: true,
-            payload: { path: 'debug.log' },
+            filePath: 'debug.log',
           }),
           '✂️ debug.log'
         )

@@ -1,4 +1,5 @@
 import React from 'react'
+import { resolveTurnTone } from '../services/statusTone'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import {
   CheckCircle2,
@@ -89,18 +90,10 @@ export const TurnNode: React.FC<NodeProps> = ({ data, selected }) => {
     }
   }
 
+  // 纯输入回合判定与配色统一来自 statusTone 单一真源，杜绝多处复算漂移
+  const isInputOnlyTurn = resolveTurnTone(turn) === 'inputOnly'
   const toolEntries = Object.entries(turn.toolCounts || {})
   const subEventsCount = turn.subEvents?.length || 0
-
-  // 判定是否为纯输入单指令回合（回合内仅有用户输入，无任何 Agent 工具调用与后续执行步骤）
-  const isInputOnlyTurn =
-    toolEntries.length === 0 &&
-    (subEventsCount <= 1 ||
-      (turn.subEvents &&
-        turn.subEvents.every(
-          (e) => e.actor === 'Human Operator' || /用户|User/i.test(e.title || '')
-        )))
-
   const handleDrillDown = (e: React.MouseEvent) => {
     e.stopPropagation()
     // 若为纯用户指令且无执行步骤，无需下钻进入空拓扑
@@ -266,3 +259,16 @@ export const TurnNode: React.FC<NodeProps> = ({ data, selected }) => {
     </div>
   )
 }
+
+/**
+ * 回合卡片渲染守卫：同 AgentNode 语义，仅按数据引用与选中态重渲染
+ * 纯函数组件 `TurnNode` 保持不变，画布侧使用 `TurnNodeMemo`
+ */
+export const TurnNodeMemo = React.memo(TurnNode, (prev, next) => {
+  return (
+    prev.id === next.id &&
+    prev.selected === next.selected &&
+    prev.data === next.data &&
+    prev.dragging === next.dragging
+  )
+})

@@ -26,8 +26,9 @@ import {
 } from 'lucide-react'
 import type { Node } from '@xyflow/react'
 import { SHOWCASE_SCENARIOS, type ShowcaseScenario } from '../fixtures/showcaseSessions'
-import { AgentNode, type AgentNodeData } from '../components/AgentNode'
-import { TurnNode, type TurnNodeData } from '../components/TurnNode'
+import { AgentNode } from '../components/AgentNode'
+import { TurnNode } from '../components/TurnNode'
+import { minimapNodeFill, minimapNodeStroke } from '../services/statusTone'
 import { NodeDetailsDrawer } from '../components/NodeDetailsDrawer'
 import { TurnDetailsDrawer } from '../components/TurnDetailsDrawer'
 import {
@@ -127,58 +128,8 @@ const FlowCanvas: React.FC<{
           maskStrokeColor="#D5CDBD"
           maskStrokeWidth={1}
           nodeStrokeWidth={1.5}
-          nodeStrokeColor={(n) => {
-            const isTurn = n.type === 'turnNode' || n.id.startsWith('turn-')
-            if (isTurn) {
-              const turnData = n.data as unknown as TurnNodeData | undefined
-              const status = turnData?.status
-              switch (status) {
-                case 'failed':
-                  return '#F43F5E'
-                case 'gate':
-                  return '#F59E0B'
-                case 'branching':
-                  return '#D97706'
-                case 'running':
-                  return '#6366F1'
-                default:
-                  return '#10B981'
-              }
-            }
-            const nodeData = n.data as unknown as AgentNodeData
-            if (nodeData?.status === 'failed' || nodeData?.status === 'rejected') return '#EF4444'
-            if (nodeData?.status === 'gate') return '#F59E0B'
-            if (nodeData?.isCorrectionBranch) return '#D97706'
-            if (nodeData?.isAggregated) return '#B5AFA4'
-            if (nodeData?.status === 'running') return '#6366F1'
-            return '#10B981'
-          }}
-          nodeColor={(n) => {
-            const isTurn = n.type === 'turnNode' || n.id.startsWith('turn-')
-            if (isTurn) {
-              const turnData = n.data as unknown as TurnNodeData | undefined
-              const status = turnData?.status
-              switch (status) {
-                case 'failed':
-                  return '#FFE4E6'
-                case 'gate':
-                  return '#FEF3C7'
-                case 'branching':
-                  return '#FEF9C3'
-                case 'running':
-                  return '#E0E7FF'
-                default:
-                  return '#D1FAE5'
-              }
-            }
-            const nodeData = n.data as unknown as AgentNodeData
-            if (nodeData?.status === 'failed' || nodeData?.status === 'rejected') return '#FEE2E2'
-            if (nodeData?.status === 'gate') return '#FEF3C7'
-            if (nodeData?.isCorrectionBranch) return '#FEF9C3'
-            if (nodeData?.isAggregated) return '#EAE4D9'
-            if (nodeData?.status === 'running') return '#E0E7FF'
-            return '#D1FAE5'
-          }}
+          nodeStrokeColor={(n) => minimapNodeStroke(n)}
+          nodeColor={(n) => minimapNodeFill(n)}
         />
       </ReactFlow>
     </div>
