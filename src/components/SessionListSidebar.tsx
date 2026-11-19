@@ -26,6 +26,7 @@ export interface SessionListSidebarProps {
   onSelectSession: (sessionId: string) => void
   onCategoryChange?: (category: SessionTabCategory) => void
   onImportJsonl?: (fileContent: string, fileName: string) => void
+  importInputRef?: React.RefObject<HTMLInputElement | null>
   isCollapsed?: boolean
   onToggleCollapse?: () => void
 }
@@ -52,13 +53,15 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
   onSelectSession,
   onCategoryChange,
   onImportJsonl,
+  importInputRef,
   isCollapsed = false,
   onToggleCollapse,
 }) => {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<SessionTabCategory>('live')
   const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const localFileInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = importInputRef ?? localFileInputRef
 
   const handleCategorySwitch = (nextCategory: SessionTabCategory) => {
     setCategory(nextCategory)
@@ -192,6 +195,7 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
       {/* 隐藏的文件输入组件 */}
       <input
         ref={fileInputRef}
+        id="netdive-jsonl-input"
         type="file"
         accept=".jsonl,.json"
         className="hidden"

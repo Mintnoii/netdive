@@ -20,7 +20,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   return (
     <div className="flex items-center space-x-2">
       <div className="flex items-center p-0.5 bg-[#EFECE6] border border-[#E5E0D8] rounded-lg">
-        {/* 执行控制台 Tab */}
+        {/* 会话回放 Tab */}
         <button
           onClick={() => onChangeTab('live')}
           className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
@@ -28,10 +28,10 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
               ? 'bg-[#1E2024] text-[#FBF9F5] shadow-xs'
               : 'text-[#6E685E] hover:text-[#1E2024] hover:bg-[#F7F5F0]'
           }`}
-          title="执行拓扑、回溯时光机与操作拦截"
+          title="本地 JSONL 因果拓扑与上下文复盘，可选接入实时桥接"
         >
           <Activity className="w-3.5 h-3.5 text-emerald-400" />
-          <span className="font-semibold">执行控制台</span>
+          <span className="font-semibold">会话回放</span>
           {bridgeConnected && (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
           )}

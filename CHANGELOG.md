@@ -1,5 +1,52 @@
 # Changelog
 
+## 未发布 — 会话复盘诊断报告落地 (2026-11-19)
+
+把回放数据从「能看」推进到「能给出改法」。规约见 `openspec/changes/context-health-report/`。
+
+### 变更
+
+- 新增 `src/services/contextHealthReport.ts`：纯函数报告构造器与 Markdown 序列化，复用趋势、压缩机会、重复调用折叠和前缀哈希，结论全部来自规则与阈值；
+- 建议清单覆盖长输出折叠、水位逼近上限、水位来源推算、前缀漂移、重复失败、门禁记录和连续同构调用，每条带证据 nodeId 与量化收益；
+- 新增 `ContextHealthReportDrawer`，会话面包屑提供「复盘诊断」入口，空会话禁用，支持复制 Markdown 报告；
+- 新增 5 项契约单测，覆盖空会话、压缩建议、前缀漂移、失败共振与门禁、Markdown 确定性；
+- README 与 INTERVIEW 文档同步报告口径。
+
+### 校验
+
+`pnpm test` 373 pass / 0 fail；`pnpm build` 零类型错误；浏览器实测空态禁用、有会话时报告与抽屉可用。
+
+## 未发布 — 首屏切换到复盘空态 (2026-11-19)
+
+把「复盘优先」从文档口径落到首屏行为。
+
+### 变更
+
+- `HeaderNav` 第一个 Tab 从「执行控制台」改为「会话回放」，tooltip 明确本地 JSONL 复盘与可选桥接；
+- `App.tsx` 的 `rawEvents` 初始值改为空数组，首屏不再默认渲染内置演示图；空态提供「导入 .jsonl」主按钮，从左侧会话列表选择真实会话后自动解析；空态下再次点击当前会话也会补载账本；
+- 时间轴重置改为回到复盘空态；演示会话保留为侧边栏里的显式入口；
+- `SessionListSidebar` 新增 `importInputRef`，让空态按钮复用同一条文件导入链路；
+- README 的架构矩阵与上手说明同步改成回放优先。
+
+### 校验
+
+`pnpm test` 368 pass / 0 fail；`pnpm build` 零类型错误。
+
+## 未发布 — 上下文工程演练画布与文档收口 (2026-11-19)
+
+新增第三个独立入口 Context Lab，把上下文治理从「只能看水位」推进到「可以动手演练」。
+
+### 变更
+
+- `src/services/contextGovernanceEngine.ts` 定义 `ContextState` 四层真源（预算 / 固定前缀 / 工作区 / 清理流水账），场景取 9 步 Ghost 炼化流水线；
+- `src/pages/ContextLabPage.tsx` 与 `ContextBottomPanel.tsx` 落地四种交互：掐头去尾、打包精简、折叠同构调用、按 ID 从 `backupStore` 取回或还原；另加动态时间戳导致前缀哈希突变的教学反例；
+- `AgentNode` 支持同构子节点展开 / `×3` 聚合与手动位置覆盖，主干连线随展开状态切换出口；
+- 文档收口：README 补齐 Context Lab 入口与文档导航，修正测试数为 368、静态检查为 11 warning；`POSITIONING.md` 删除尚未落地的 W3C Trace Context 口径并补充真实使用边界；新增 `docs/INTERVIEW.md` 面试讲述与简历素材，定位改为会话复盘优先、实时与门禁作为可选通道。
+
+### 校验
+
+`pnpm test` 368 pass / 0 fail；`pnpm build` 零类型错误；`pnpm exec oxlint` 11 warning 未增。规约见 `openspec/changes/context-governance-lab/`。
+
 ## 未发布 — 瘦节点视图模型落地 (2026-11-17)
 
 第四轮收敛，修的是「项目自己的门禁条款被自己的代码违反」：`AGENTS.md §3.3` 明令禁止把完整 stdout / payload 塞进画布节点，但只有回放路径遵守，实时路径一直违规。这一版把两条轨道拉齐。

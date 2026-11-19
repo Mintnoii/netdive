@@ -198,3 +198,19 @@ NetDive 的定位是**旁路观测与拦截控制台**（见 `docs/POSITIONING.m
 | `future-lab-import-from-live-observation` | 从压缩机会浮层一键把真实观测导入沙盒试算 | 未排期 |
 | `context-trend-and-event-track` | **正式提案**：上下文趋势轨道、图表联动、可信度标注三里程碑串行交付 | 三里程碑全部对齐，已授权整理提交 |
 
+---
+
+## 八、下一步：双会话差分视图
+
+**状态**：已具备契约基础，未排期实现。
+
+`context-health-report` 已经把单次会话报告收敛为 `ContextHealthReport`。双会话差分直接比较两份报告即可，不需要重新解析事件：
+
+- 峰值 token、占用率与 headroom 差；
+- 压缩命中数与预计回收字符差；
+- 失败指纹集合的新增与消失；
+- 前缀稳定性从 `drifted` 收敛到 `stable` 的验证；
+- 建议清单的差集，作为 prompt 或工具调整前后的回归证据。
+
+实现时新增一个选择两个 JSONL 的入口，复用 `buildContextHealthReport` 与 `toMarkdownReport`，不改动现有回放页与 Bridge。
+

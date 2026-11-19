@@ -16,6 +16,8 @@ import {
   Check,
   Layers,
   GitCommit,
+  FileCode,
+  ClipboardList,
   ChevronLeft,
   ChevronRight,
   X,
@@ -33,7 +35,9 @@ import { StateTimelineScrubber } from './components/StateTimelineScrubber'
 import { NodeContextMenu } from './components/NodeContextMenu'
 import { HeaderNav, type StudioTab } from './components/HeaderNav'
 import { SessionListSidebar } from './components/SessionListSidebar'
-// 非首屏页面按需加载，首屏只承担执行控制台
+import { ContextHealthReportDrawer } from './components/ContextHealthReportDrawer'
+import { buildContextHealthReport } from './services/contextHealthReport'
+// 非首屏页面按需加载，首屏承担会话回放
 const CompactorLabPage = lazy(() =>
   import('./pages/CompactorLabPage').then((mod) => ({ default: mod.CompactorLabPage }))
 )
@@ -275,6 +279,8 @@ function MainFlowCanvas() {
   const [selectedTurnForDrawer, setSelectedTurnForDrawer] = useState<MacroTurnGroup | null>(null)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [isDiagnosticCopied, setIsDiagnosticCopied] = useState(false)
+  const [isHealthReportOpen, setIsHealthReportOpen] = useState(false)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
 
   // 双焦视图模式：'turns' (宏观回合) | 'flat' (全量流水)
   const [viewMode, setViewMode] = useState<'turns' | 'flat'>('turns')
@@ -282,8 +288,9 @@ function MainFlowCanvas() {
   // 微观下钻选中的 Turn ID (为 null 时处于宏观总览态)
   const [activeDrilldownTurnId, setActiveDrilldownTurnId] = useState<string | null>(null)
 
-  // 缓存当前会话的原始事件流水 (rawEvents)，作为同构折叠与拓扑重算的单一真理源
-  const [rawEvents, setRawEvents] = useState<TelemetryEvent[]>(defaultMockEvents)
+  // 缓存当前会话的原始事件流水 (rawEvents)，作为同构折叠与拓扑重算的单一真理源。
+  // 首屏保持空态，只有选中真实会话、导入账本或显式点击演示会话时才填充。
+  const [rawEvents, setRawEvents] = useState<TelemetryEvent[]>([])
   const [resetKey, setResetKey] = useState<number>(0)
 
   // 初次加载时，若本地存在真实会话，自动优先激活首个真实会话，不再默认停留在演示沙盒
@@ -302,6 +309,12 @@ function MainFlowCanvas() {
       })
     }
   }, [bridge.localSessions, bridge, setActiveSessionId, setWatermark])
+
+  // 复盘诊断报告由纯函数从事件流与水位派生，抽屉与导出共用同一对象
+  const healthReport = useMemo(
+    () => buildContextHealthReport(rawEvents, watermark),
+    [rawEvents, watermark]
+  )
 
   // 维护全局 eventsMap，用于点击节点时按需 JIT 取出原始 TelemetryEvent 渲染详情
   const eventsMap = useMemo(() => {
@@ -558,15 +571,17 @@ function MainFlowCanvas() {
           <SessionListSidebar
             sessions={displaySessionsList}
             activeSessionId={activeSessionId}
+            importInputRef={importInputRef}
             onSelectSession={async (sid) => {
               setContextMenu(null)
+              setIsHealthReportOpen(false)
               setSelectedDetailsNode(null)
               setSelectedNodeId(null)
               setSelectedTurnForDrawer(null)
               setActiveDrilldownTurnId(null)
 
-              // 1. 若已经是当前会话，无需重复加载
-              if (activeSessionId === sid) return
+              // 1. 已是当前会话且画布已有事件时无需重复加载；空态下仍要补载账本
+              if (activeSessionId === sid && totalNodesCount > 0) return
 
               // 2. 立即激活选中状态 (侧边栏高亮即时生效)
               setActiveSessionId(sid)
@@ -588,6 +603,7 @@ function MainFlowCanvas() {
             }}
             onImportJsonl={(content) => {
               setContextMenu(null)
+              setIsHealthReportOpen(false)
               setSelectedDetailsNode(null)
               setSelectedNodeId(null)
               setSelectedTurnForDrawer(null)
@@ -611,7 +627,9 @@ function MainFlowCanvas() {
                   <span className="font-semibold truncate max-w-xs md:max-w-md">
                     {activeSessionId === 'live-waiting'
                       ? '等待外部 Agent 连接接入中...'
-                      : (displaySessionsList.find((s) => s.id === activeSessionId)?.title || activeSessionMeta?.title || '未命名任务会话')}
+                      : totalNodesCount === 0
+                        ? '尚未选择会话'
+                        : (displaySessionsList.find((s) => s.id === activeSessionId)?.title || activeSessionMeta?.title || '未命名任务会话')}
                   </span>
                 </div>
 
@@ -647,6 +665,22 @@ function MainFlowCanvas() {
                         <span className="text-[10px] font-sans">复制现场</span>
                       </>
                     )}
+                  </button>
+                )}
+
+                {/* 复盘诊断报告入口：空会话禁用，避免展示伪造指标 */}
+                {rawEvents.length > 0 && (
+                  <button
+                    onClick={() => setIsHealthReportOpen((open) => !open)}
+                    className={`px-1.5 py-0.5 rounded border flex items-center space-x-1 transition-all cursor-pointer ${
+                      isHealthReportOpen
+                        ? 'bg-amber-50 text-amber-800 border-amber-300 shadow-2xs'
+                        : 'bg-white text-[#5C5549] border-[#E5E0D8] hover:bg-[#F4F0EA] hover:text-[#1E2024]'
+                    }`}
+                    title="基于当前会话生成上下文诊断与优化建议"
+                  >
+                    <ClipboardList className="w-3 h-3 text-[#8F887D]" />
+                    <span className="text-[10px] font-sans">复盘诊断</span>
                   </button>
                 )}
 
@@ -745,16 +779,35 @@ function MainFlowCanvas() {
             {/* 主体画布与侧边栏抽屉协同 Push 布局 */}
             <main className="flex-1 flex w-full min-h-0 overflow-hidden relative">
               <div className="flex-1 h-full relative paper-pattern min-w-0 transition-all duration-300">
-                {activeSessionId === 'live-waiting' && totalNodesCount === 0 ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center select-none z-10 pointer-events-none">
-                    <div className="w-12 h-12 rounded-2xl bg-white border border-[#E5E0D8] shadow-sm flex items-center justify-center mb-3 text-emerald-600">
-                      <span className="w-3 h-3 rounded-full bg-emerald-500 animate-ping" />
+                {totalNodesCount === 0 ? (
+                  activeSessionId === 'live-waiting' ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center select-none z-10 pointer-events-none">
+                      <div className="w-12 h-12 rounded-2xl bg-white border border-[#E5E0D8] shadow-sm flex items-center justify-center mb-3 text-emerald-600">
+                        <span className="w-3 h-3 rounded-full bg-emerald-500 animate-ping" />
+                      </div>
+                      <h4 className="text-sm font-semibold text-[#1E2024]">正在监听本地实时工作流...</h4>
+                      <p className="text-xs text-[#8F887D] max-w-xs mt-1.5 font-mono leading-relaxed">
+                        启动本地 Agent (Pi / Hermes) 触发执行，或在左下角导入本地会话文件 (.jsonl)
+                      </p>
                     </div>
-                    <h4 className="text-sm font-semibold text-[#1E2024]">正在监听本地实时工作流...</h4>
-                    <p className="text-xs text-[#8F887D] max-w-xs mt-1.5 font-mono leading-relaxed">
-                      启动本地 Agent (Pi / Hermes) 触发执行，或在左下角导入本地会话文件 (.jsonl)
-                    </p>
-                  </div>
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center select-none z-10">
+                      <div className="w-12 h-12 rounded-2xl bg-white border border-[#E5E0D8] shadow-sm flex items-center justify-center mb-3 text-[#5C5549]">
+                        <FileCode className="w-5 h-5" />
+                      </div>
+                      <h4 className="text-sm font-semibold text-[#1E2024]">还没有可复盘的会话</h4>
+                      <p className="text-xs text-[#8F887D] max-w-xs mt-1.5 leading-relaxed">
+                        从左侧选择本地会话，或直接导入 .jsonl 账本开始复盘。
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => importInputRef.current?.click()}
+                        className="mt-4 px-3 py-1.5 rounded-md bg-[#1E2024] text-[#FBF9F5] text-xs font-medium cursor-pointer pointer-events-auto"
+                      >
+                        导入 .jsonl
+                      </button>
+                    </div>
+                  )
                 ) : null}
 
                 <ReactFlow
@@ -951,7 +1004,7 @@ function MainFlowCanvas() {
             </main>
 
             {/* 统一因果时间轴 (仅在非活跃运行态展示；活跃运行态自动隐藏，防止与实时流冲突) */}
-            {activeSessionId !== 'live-waiting' && !isCurrentSessionActive && (
+            {totalNodesCount > 0 && activeSessionId !== 'live-waiting' && !isCurrentSessionActive && (
               <StateTimelineScrubber
                 currentStep={timelineStep > 0 ? timelineStep : Math.max(1, totalNodesCount)}
                 totalSteps={Math.max(1, totalNodesCount)}
@@ -962,13 +1015,14 @@ function MainFlowCanvas() {
                 unitLabel={viewMode === 'turns' && !activeDrilldownTurnId ? '回合' : '步'}
                 onResetCanvas={() => {
                   setContextMenu(null)
+                  setIsHealthReportOpen(false)
                   setSelectedDetailsNode(null)
                   setSelectedNodeId(null)
                   setSelectedTurnForDrawer(null)
                   setActiveDrilldownTurnId(null)
                   setIsTimelinePlaying(false)
                   resetStream()
-                  setRawEvents(defaultMockEvents)
+                  setRawEvents([])
                   setResetKey((k) => k + 1)
                 }}
                 onTogglePlay={() => {
@@ -1042,6 +1096,14 @@ function MainFlowCanvas() {
           sessionId={activeSessionId}
         />
       )}
+
+      {/* 复盘诊断报告抽屉：与水位检查器并列，便于对照画布节点看证据 */}
+      <ContextHealthReportDrawer
+        isOpen={isHealthReportOpen}
+        onClose={() => setIsHealthReportOpen(false)}
+        report={healthReport}
+        sessionTitle={displaySessionsList.find((s) => s.id === activeSessionId)?.title}
+      />
     </div>
   )
 }
