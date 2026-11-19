@@ -515,10 +515,13 @@ function MainFlowCanvas() {
 
   /**
    * 画布节点变更吸收器：使用 React Flow 官方 applyNodeChanges 纯函数
-   * 完整保留 dragging 与 measured 尺寸，确保 EdgeRenderer 实时根据 Handle 计算坐标，彻底根除连线看不见的问题
+   * 严格过滤掉 select 变更，防止触发 React Flow 原生多选虚线选区框 (.react-flow__nodesselection-rect)
    */
   const handleFlowNodesChange = useCallback((changes: NodeChange[]) => {
-    setActiveFlowNodes((currentNodes) => applyNodeChanges(changes, currentNodes))
+    const nonSelectChanges = changes.filter((c) => c.type !== 'select')
+    if (nonSelectChanges.length > 0) {
+      setActiveFlowNodes((currentNodes) => applyNodeChanges(nonSelectChanges, currentNodes))
+    }
   }, [])
 
   // 当前时间轴截断渲染的边集合：
@@ -947,6 +950,9 @@ function MainFlowCanvas() {
                   onNodesChange={handleFlowNodesChange}
                   onEdgesChange={onEdgesChange}
                   nodeDragThreshold={3}
+                  elementsSelectable={false}
+                  selectionOnDrag={false}
+                  panOnDrag={true}
                   onPointerDown={(e) => {
                     pointerDownPosRef.current = { x: e.clientX, y: e.clientY }
                   }}

@@ -9,6 +9,8 @@
   --ink-secondary: #5E6573;
   --ink-border: #E5E0D8;
   --ink-border-focus: #1E2024;
+  --xy-selection-border: none !important;
+  --xy-selection-border-default: none !important;
 }
 
 html, body {
@@ -74,6 +76,25 @@ html, body {
 .paper-pattern {
   background-image: radial-gradient(#D6D0C5 1px, transparent 1px);
   background-size: 20px 20px;
+}
+
+/* 彻底隐藏 React Flow 默认多选/拖拽时出现的虚线框 (1px dotted selection rect) */
+.react-flow__nodesselection,
+.react-flow__nodesselection-rect,
+.react-flow__selection {
+  display: none !important;
+  border: none !important;
+  outline: none !important;
+}
+
+/* 彻底消除任何聚焦或拖拽产生的 outline/虚线边框 */
+.react-flow__node:focus,
+.react-flow__node:focus-visible,
+.react-flow__node.selectable:focus,
+.react-flow__node.selectable:focus-visible,
+.react-flow__pane:focus,
+.react-flow__pane:focus-visible {
+  outline: none !important;
 }
 
 /* -------------------------------------------------------------------------- */

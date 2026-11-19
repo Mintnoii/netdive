@@ -965,7 +965,6 @@ export function eventsToFlowNodesAndEdges(
       height: 140,
       initialWidth: AGENT_NODE_WIDTH,
       initialHeight: 140,
-      measured: { width: AGENT_NODE_WIDTH, height: 140 },
     }
 
     nodes.push(node)
@@ -1330,9 +1329,6 @@ export function turnsToFlowNodesAndEdges(
         position: { x: currentX, y: currentY },
         width: nodeWidth,
         height: 120,
-        initialWidth: nodeWidth,
-        initialHeight: 120,
-        measured: { width: nodeWidth, height: 120 },
         data: {
           ...turn,
           isExpanded,
