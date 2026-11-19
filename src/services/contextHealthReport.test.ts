@@ -127,6 +127,19 @@ describe('contextHealthReport Service', () => {
     assert.equal(hasSuggestion(report, 'gate-review'), true)
   })
 
+  it('splits generic failed statuses by target instead of collapsing into one fingerprint', () => {
+    const testFailure = createEvent({ nodeId: 'node-test', status: 'failed', title: 'Bash: pnpm test' })
+    const buildFailure = createEvent({ nodeId: 'node-build', status: 'failed', title: 'Bash: pnpm build' })
+
+    const report = buildContextHealthReport([testFailure, buildFailure], createWatermark('stable'))
+
+    assert.equal(report.failures.groups.length, 2)
+    assert.deepEqual(
+      report.failures.groups.map((item) => item.rule).sort(),
+      ['failed | Bash: pnpm build', 'failed | Bash: pnpm test']
+    )
+  })
+
   it('serializes a deterministic Markdown report with evidence', () => {
     const event = createEvent({
       nodeId: 'node-evidence',

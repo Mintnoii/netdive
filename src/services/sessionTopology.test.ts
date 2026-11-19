@@ -19,6 +19,7 @@ import {
   processEventForSessions,
   resolveCausalConnection,
 } from './sessionTopology'
+import { FLOW_LAYOUT } from './flowLayout'
 
 /** 构造标准遥测事件 */
 function makeEvent(overrides: Partial<TelemetryEvent> = {}): TelemetryEvent {
@@ -141,7 +142,7 @@ describe('Session Topology 纯逻辑层契约', () => {
       )
 
       const node = session.nodes[0]
-      assert.equal(node.position.y, 180 + 160, '自愈分支节点必须下沉')
+      assert.equal(node.position.y, FLOW_LAYOUT.baseY + FLOW_LAYOUT.branchOffset, '自愈分支节点必须下沉')
       const data = node.data as unknown as AgentNodeData
       assert.equal(data.status, 'failed')
       assert.equal(data.isCorrectionBranch, true)
@@ -230,10 +231,13 @@ describe('Session Topology 纯逻辑层契约', () => {
   describe('坐标纯函数 calculateNodePosition', () => {
     it('沿父节点顺延，缺父节点时按节点数铺续', () => {
       const parent = { id: 'p', position: { x: 330, y: 180 }, data: {} } as Node
-      assert.deepEqual(calculateNodePosition({}, 'p', [parent]), { x: 610, y: 180 })
+      assert.deepEqual(calculateNodePosition({}, 'p', [parent]), {
+        x: 330 + FLOW_LAYOUT.stepX,
+        y: 180,
+      })
       assert.deepEqual(calculateNodePosition({ isCorrectionBranch: true }, undefined, []), {
         x: 50,
-        y: 340,
+        y: FLOW_LAYOUT.baseY + FLOW_LAYOUT.branchOffset,
       })
     })
   })

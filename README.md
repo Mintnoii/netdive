@@ -8,7 +8,7 @@
 [![TypeScript 7.x](https://img.shields.io/badge/TypeScript-7.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![React 19](https://img.shields.io/badge/React-19.x-61dafb?logo=react)](https://react.dev/)
 [![Hono 4.x](https://img.shields.io/badge/Hono-4.x-E36002?logo=hono)](https://hono.dev/)
-[![Build & Tests](https://img.shields.io/badge/Tests-373%20Passed%20(100%25)-brightgreen)]()
+[![Build & Tests](https://img.shields.io/badge/Tests-378%20Passed%20(100%25)-brightgreen)]()
 
 ---
 
@@ -20,6 +20,7 @@
 - 想讲清楚「为什么做、和 Langfuse / Dify 有什么不同」：[项目定位](./docs/POSITIONING.md)
 - 想深挖流式解析与错误自愈：[技术点 1](./docs/tech-point-1-streaming-parser.md) · [技术点 2](./docs/tech-point-2-self-correction.md)
 - 想知道哪些能力明确暂缓、边界在哪：[BACKLOG](./docs/BACKLOG.md)
+- 想看会话数据还能怎么二次利用：[方向索引](./docs/SESSION_DATA_DIRECTIONS.md)
 - 准备面试或写简历：[面试讲述与简历素材](./docs/INTERVIEW.md)
 - 想看编码审美审阅与规约演进：[静态审阅报告](./docs/code-aesthetics-review.md) · [OpenSpec 变更提案](./openspec/changes/)
 
@@ -68,6 +69,8 @@
                                 ▼
       自主智能体工作流 (Pi / Claude Code / Ghost & Tachikoma Pipelines)
 ```
+
+第四个入口是「回归工作台」，与回放页平级：失败 trace 冻结成用例，导入重跑 JSONL 后做逐项对照。
 
 ---
 
@@ -119,7 +122,14 @@
 - **纯函数构造**：`buildContextHealthReport(events, watermark)` 复用趋势、压缩机会、重复调用折叠与前缀哈希，输出七块结构化报告，零模型调用、零副作用；
 - **证据化建议**：每条建议带严重级别、触发阈值、量化收益与证据 nodeId，可复制为 Markdown 用于评审；
 - **覆盖维度**：峰值水位与 headroom、七类上下文占比、长工具输出压缩潜力、前缀漂移、失败指纹、门禁记录与连续同构调用；
-- **诚实边界**：水位来自 `estimated` 时明确标注推算；没有 prompt 快照时前缀稳定性标为 `unknown`。双会话差分尚未实现，见 `docs/BACKLOG.md`。规约见 `openspec/changes/context-health-report/`。
+- **诚实边界**：水位来自 `estimated` 时明确标注推算；没有 prompt 快照时前缀稳定性标为 `unknown`。规约见 `openspec/changes/context-health-report/`。
+
+### 8. 失败会话用例提纯与回归评测 (Trace-to-Eval Pipeline & Regression Bench)
+- **定位第一性**：消除将比对当主入口的心智割裂，以「从失败 Trace 中提炼测试用例」为核心主线，对账比对归位为重跑后的验收闭环；
+- **5 步提纯流水线**：白盒化呈现故障分级捕获（L1/L2）、规范化指纹去噪、证据载荷剥离与 WAL 指针冻结、三维复合验收断言合成与 Tracing Tag 探针嵌入；
+- **冷热数据分层同构**：用例只持久化断言规则、基线指标与 `pointerId`，大 payload 卸载至 WAL，单用例控制在 5KB 内，与上下文演练中的 Micro-Compactor 底层技术同构；
+- **全特性内置演示用例**：内置典型死循环与微压缩回归样例，并提供「⚡ 一键模拟优化重跑」交互，现场秒级呈现全绿对账差异；
+- **诚实边界**：浏览器不替 Agent 重跑真实工具，对照对象来自用户导入的新会话或内置的演示样本。其他数据利用方向见 `docs/SESSION_DATA_DIRECTIONS.md`。规约见 `openspec/changes/trace-to-regression-case/`。
 
 ---
 
@@ -144,6 +154,7 @@ pnpm dev
 ```
 打开浏览器访问 `http://localhost:5173`。
 - **会话回放 / Replay**：首屏保持空态；从左侧选择本机会话或拖入 `.jsonl`，沿时间轴复盘因果主干、失败自愈分支与上下文水位。桥接连通后可在同一画布观察后台 Agent；点「复盘诊断」生成带证据的优化建议；
+- **回归工作台 / Regression**：在失败会话上冻结用例，改完 prompt 或工具后导入新的 `.jsonl`，看失败指纹和基线指标有没有回退；
 - **门禁通道**：仅在高危审批出现时弹出；交互式编码场景仍推荐终端内联确认；
 - **上下文实验室 / Context Lab**：用 9 步 Ghost 炼化流水线逐步操作掐头去尾、打包精简、折叠重复调用，查看按 ID 取回原文与前缀哈希变化；
 - **压缩沙盒 / Sandbox**：试算微压缩收益、剖开七类上下文水位、跑四幕演示剧本，不消费真实会话数据。
@@ -168,10 +179,10 @@ pnpm test:workflow
 
 ## 自动化测试与工程质量
 
-全仓包含 **373 项单元与集成测试**，覆盖 Bridge RPC 挂起、L1 确定性硬断言、WAL 离线指针、Prompt Caching 前缀保真、JSONL 聚合折叠、7-part 上下文采集对账、压缩机会剖析纯函数、模型窗口解析、上下文趋势轨道、上下文治理引擎的四种优化动作与备份回滚，以及复盘诊断报告的契约与规则：
+全仓包含 **378 项单元与集成测试**，覆盖 Bridge RPC 挂起、L1 确定性硬断言、WAL 离线指针、Prompt Caching 前缀保真、JSONL 聚合折叠、7-part 上下文采集对账、压缩机会剖析纯函数、模型窗口解析、上下文趋势轨道、上下文治理引擎的四种优化动作与备份回滚，以及复盘诊断报告与回归用例的契约与规则：
 
 ```bash
-# 执行全量单元测试 (373 passed, 0 fail)
+# 执行全量单元测试 (378 passed, 0 fail)
 pnpm test
 
 # 静态检查 (oxlint，当前 11 条 warning，均为 react-hooks 与 fast-refresh 提示)

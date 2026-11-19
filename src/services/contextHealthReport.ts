@@ -165,6 +165,27 @@ function buildPrefixStability(events: TelemetryEvent[]): PrefixStability {
   }
 }
 
+/**
+ * 解析失败指纹。断言规则优先；本地会话常常没有 rule，退化为「状态 + 目标」，避免所有失败塌缩成同一个 failed。
+ * 同时过滤底层大模型生成的无意义机器哈希（如 chatcmpl-xxx、toolu_xxx），收敛为有业务语义的描述。
+ */
+export function resolveFailureKey(event: TelemetryEvent): string {
+  const explicit = event.assertion?.rule || event.assertion?.reason
+  if (explicit) return explicit
+  const payloadCommand = event.payload?.command
+  const rawTarget =
+    event.observation?.command ||
+    (typeof payloadCommand === 'string' ? payloadCommand : undefined) ||
+    event.title ||
+    event.nodeId
+
+  // 过滤无意义的大模型底层 ID 与 hash，聚合为统一的响应异常描述
+  const isMachineHash = /^(chatcmpl-|call_|toolu_|msg_|resp_|[0-9a-f]{8}-[0-9a-f]{4})/i.test(rawTarget)
+  const target = isMachineHash ? '模型响应异常' : rawTarget
+  const normalized = target.replace(/\s+/g, ' ').trim().slice(0, 120)
+  return `${event.status || 'failed'} | ${normalized}`
+}
+
 function buildFailures(events: TelemetryEvent[]): { total: number; groups: FailureGroup[] } {
   const failed = sift(
     events.filter(
@@ -174,10 +195,7 @@ function buildFailures(events: TelemetryEvent[]): { total: number; groups: Failu
         event.status === 'rejected'
     )
   )
-  const grouped = group(
-    failed,
-    (event) => event.assertion?.rule || event.assertion?.reason || event.status || 'unknown'
-  )
+  const grouped = group(failed, resolveFailureKey)
   const groups = sort(
     Object.entries(grouped).map(([rule, items]) => ({
       rule,

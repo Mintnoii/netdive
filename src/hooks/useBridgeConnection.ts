@@ -10,8 +10,10 @@ import {
   DEFAULT_BRIDGE_WS_URL,
 } from '../config/bridge'
 import { httpJson, httpPostSilent, httpText } from '../utils/http'
+import type { LocalSessionEntry } from '../services/localSessionScanner'
 
 export { DEFAULT_BRIDGE_HTTP_URL, DEFAULT_BRIDGE_WS_URL }
+export type { LocalSessionEntry }
 
 export type BridgeConnectionStatus = 'connected' | 'connecting' | 'disconnected'
 
@@ -35,18 +37,6 @@ export interface UseBridgeConnectionOptions {
   onEvent?: (event: TelemetryEvent) => void
   onGatePrompt?: (payload: GatePromptPayload) => void
   onGateResolved?: (gateId: string, decision: GateDecision) => void
-}
-
-export interface LocalSessionEntry {
-  id: string
-  fileName: string
-  title?: string
-  lineCount?: number
-  folder: string
-  fullPath: string
-  mtime: number
-  size: number
-  project: string
 }
 
 export interface UseBridgeConnectionReturn {
@@ -252,15 +242,23 @@ export function useBridgeConnection(
   )
 
   /**
-   * 拉取本地 Pi 存量会话列表 (默认扫描最近活跃的 30 条)
+   * 拉取本地 Pi 存量会话列表 (默认扫描最近活跃的 50 条)
+   * 优先尝试同源 Vite /api（开发中间件直通），兜底尝试 4560 Bridge 端口
    */
   const fetchLocalSessions = useCallback(async (): Promise<LocalSessionEntry[]> => {
-    const [err, data] = await httpJson<{ ok: boolean; sessions?: LocalSessionEntry[] }>(
-      `${httpUrl}/api/sessions/local?limit=30`
+    let [err, data] = await httpJson<{ ok: boolean; sessions?: LocalSessionEntry[] }>(
+      '/api/sessions/local?limit=50',
+      { timeoutMs: 15000 }
     )
 
     if (err || !data?.ok || !data.sessions) {
-      if (err) console.warn('[NetDive Bridge] 本地会话列表拉取失败:', err.message)
+      ;[err, data] = await httpJson<{ ok: boolean; sessions?: LocalSessionEntry[] }>(
+        `${httpUrl}/api/sessions/local?limit=50`,
+        { timeoutMs: 15000 }
+      )
+    }
+
+    if (err || !data?.ok || !data.sessions) {
       return []
     }
 
@@ -273,7 +271,11 @@ export function useBridgeConnection(
    */
   const fetchSessionTranscript = useCallback(
     async (id: string): Promise<string | null> => {
-      const [err, text] = await httpText(`${httpUrl}/api/sessions/local/${id}/transcript`)
+      let [err, text] = await httpText(`/api/sessions/local/${id}/transcript`)
+
+      if (err || text === null) {
+        ;[err, text] = await httpText(`${httpUrl}/api/sessions/local/${id}/transcript`)
+      }
 
       if (err || text === null) {
         if (err) console.warn(`[NetDive Bridge] 会话 ${id} 转录拉取失败:`, err.message)
@@ -285,7 +287,11 @@ export function useBridgeConnection(
     [httpUrl]
   )
 
-  // 当连接上 Bridge 时，自动拉取一次本地存量会话
+  // 组件挂载即主动拉取一次本地存量会话（不强制依赖 WebSocket 握手成功），仅在真正连接成功时刷新
+  useEffect(() => {
+    fetchLocalSessions()
+  }, [fetchLocalSessions])
+
   useEffect(() => {
     if (status === 'connected') {
       fetchLocalSessions()

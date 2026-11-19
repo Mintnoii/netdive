@@ -348,7 +348,7 @@ export const TurnDetailsDrawer: React.FC<TurnDetailsDrawerProps> = ({
                           <span className="text-[10px] font-mono font-medium text-[#6E685E]">
                             工具入参 (Payload):
                           </span>
-                          <pre className="p-2 rounded bg-[#F4F0EA] border border-[#E5E0D8] text-[10px] font-mono text-[#1E2024] overflow-x-auto whitespace-pre-wrap break-all leading-normal select-all">
+                          <pre className="p-2 rounded bg-[#F4F0EA] border border-[#E5E0D8] text-[10px] font-mono text-[#1E2024] overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-all leading-normal select-all">
                             {JSON.stringify(ev.payload, null, 2)}
                           </pre>
                         </div>

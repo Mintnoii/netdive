@@ -13,7 +13,6 @@ import {
   UploadCloud,
   FileCode,
   Sparkles,
-  Activity,
 } from 'lucide-react'
 import type { ActiveSessionItem, TelemetryStatus } from '../types/telemetry'
 import { formatRelativeTime } from '../types/telemetry'
@@ -29,6 +28,7 @@ export interface SessionListSidebarProps {
   importInputRef?: React.RefObject<HTMLInputElement | null>
   isCollapsed?: boolean
   onToggleCollapse?: () => void
+  bridgeConnected?: boolean
 }
 
 /** 状态图标映射 */
@@ -51,64 +51,27 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
   sessions,
   activeSessionId,
   onSelectSession,
-  onCategoryChange,
   onImportJsonl,
   importInputRef,
   isCollapsed = false,
   onToggleCollapse,
+  bridgeConnected = false,
 }) => {
   const [query, setQuery] = useState('')
-  const [category, setCategory] = useState<SessionTabCategory>('live')
   const [isDragging, setIsDragging] = useState(false)
   const localFileInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = importInputRef ?? localFileInputRef
 
-  const handleCategorySwitch = (nextCategory: SessionTabCategory) => {
-    setCategory(nextCategory)
-    onCategoryChange?.(nextCategory)
-
-    if (nextCategory === 'demo') {
-      onSelectSession('demo-session')
-    } else {
-      const firstLive = sessions.find(
-        (s) => s.id !== 'demo-session' && s.id !== 'default-session'
-      )
-      if (firstLive) {
-        onSelectSession(firstLive.id)
-      } else {
-        onSelectSession('live-waiting')
-      }
-    }
-  }
-
-  // 区分演示沙盒会话与本机/外部导入的真实会话
-  const categorizedSessions = useMemo(() => {
-    return sessions.filter((s) => {
-      const isDemo = s.id === 'demo-session' || s.id === 'default-session'
-      return category === 'demo' ? isDemo : !isDemo
-    })
-  }, [sessions, category])
-
-  // 绝对稳定列表：直接保留传入时的稳定顺序，严禁每次点击重新排序导致卡片乱跳
+  // 稳定过滤列表：按标题、角色、工程搜索
   const filteredSessions = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return categorizedSessions
-    return categorizedSessions.filter((s) =>
+    if (!q) return sessions
+    return sessions.filter((s) =>
       s.title.toLowerCase().includes(q) ||
       s.actors.some((a) => a.toLowerCase().includes(q)) ||
       (s.project && s.project.toLowerCase().includes(q))
     )
-  }, [categorizedSessions, query])
-
-  // 统计各类会话数量
-  const liveCount = useMemo(
-    () => sessions.filter((s) => s.id !== 'demo-session' && s.id !== 'default-session').length,
-    [sessions]
-  )
-  const demoCount = useMemo(
-    () => sessions.filter((s) => s.id === 'demo-session' || s.id === 'default-session').length,
-    [sessions]
-  )
+  }, [sessions, query])
 
   const handleFileProcess = (file: File) => {
     if (!onImportJsonl) return
@@ -117,7 +80,6 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
       const text = isString(e.target?.result) ? e.target.result : ''
       if (text.trim()) {
         onImportJsonl(text, file.name)
-        setCategory('live')
       }
     }
     reader.readAsText(file)
@@ -209,8 +171,8 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
       {/* 侧边栏头部 */}
       <div className="h-10 px-3 border-b border-[#E5E0D8] flex items-center justify-between shrink-0">
         <div className="flex items-center space-x-1.5 text-xs font-semibold text-[#1E2024]">
-          <FolderKanban className="w-3.5 h-3.5 text-[#5C5549]" />
-          <span>任务会话</span>
+          <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+          <span>精选案卷</span>
           <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-[#EAE4D9] text-[#5C5549]">
             {sessions.length}
           </span>
@@ -225,41 +187,6 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
             <ChevronLeft className="w-3.5 h-3.5" />
           </button>
         )}
-      </div>
-
-      {/* 分段 Tab 切片：实时会话 vs 演示沙盒 */}
-      <div className="p-2 border-b border-[#E5E0D8] bg-[#F7F4EE] shrink-0">
-        <div className="flex items-center p-0.5 bg-[#EAE4D9] rounded-md text-[11px] font-medium border border-[#DED7CA]">
-          <button
-            onClick={() => handleCategorySwitch('live')}
-            className={`flex-1 py-1 rounded flex items-center justify-center space-x-1 transition-all cursor-pointer ${
-              category === 'live'
-                ? 'bg-white text-[#1E2024] shadow-2xs font-semibold'
-                : 'text-[#6E685E] hover:text-[#1E2024]'
-            }`}
-          >
-            <Activity className="w-3 h-3 text-emerald-600" />
-            <span>真实工作流</span>
-            <span className="text-[9px] font-mono px-1 rounded-full bg-[#EDE7DC] text-[#6E685E]">
-              {liveCount}
-            </span>
-          </button>
-
-          <button
-            onClick={() => handleCategorySwitch('demo')}
-            className={`flex-1 py-1 rounded flex items-center justify-center space-x-1 transition-all cursor-pointer ${
-              category === 'demo'
-                ? 'bg-white text-[#1E2024] shadow-2xs font-semibold'
-                : 'text-[#6E685E] hover:text-[#1E2024]'
-            }`}
-          >
-            <Sparkles className="w-3 h-3 text-amber-600" />
-            <span>演示沙盒</span>
-            <span className="text-[9px] font-mono px-1 rounded-full bg-[#EDE7DC] text-[#6E685E]">
-              {demoCount}
-            </span>
-          </button>
-        </div>
       </div>
 
       {/* 搜索框 */}
@@ -279,17 +206,8 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
       {/* 会话列表项 */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
         {filteredSessions.length === 0 ? (
-          <div className="py-8 text-center text-xs text-[#8F887D] font-mono px-2">
-            {category === 'live' ? (
-              <div className="space-y-2">
-                <p>暂无活跃的外部会话</p>
-                <p className="text-[10px] text-[#A8A29E]">
-                  启动本地 Agent (Pi / Hermes) 触发执行，或拖入 .jsonl 文件
-                </p>
-              </div>
-            ) : (
-              <p>未找到匹配的演示会话</p>
-            )}
+          <div className="py-8 text-center text-xs font-mono px-2 text-[#8F887D]">
+            未找到匹配的精选案卷
           </div>
         ) : (
           filteredSessions.map((session) => {
@@ -371,16 +289,29 @@ export const SessionListSidebar: React.FC<SessionListSidebarProps> = ({
         )}
       </div>
 
-      {/* 底部：导入本地 .jsonl 会话常驻操作区 */}
-      <div className="p-2 border-t border-[#E5E0D8] bg-[#FAF8F5] shrink-0">
+      {/* 底部：导入本地 .jsonl 会话常驻操作区与状态条 */}
+      <div className="p-2 border-t border-[#E5E0D8] bg-[#FAF8F5] shrink-0 space-y-1.5">
         <button
           onClick={() => fileInputRef.current?.click()}
           className="w-full py-1.5 px-2 rounded-md border border-dashed border-[#C5BDAF] bg-white hover:bg-[#F4F0EA] hover:border-[#1E2024] text-[#5C5549] hover:text-[#1E2024] text-xs font-medium flex items-center justify-center space-x-1.5 transition-all cursor-pointer shadow-2xs"
           title="点击选择本地 ~/.pi/agent/sessions/*.jsonl 文件，或直接拖拽进本侧边栏"
         >
           <FileCode className="w-3.5 h-3.5 text-indigo-600" />
-          <span>导入本地会话 (.jsonl)</span>
+          <span>导入本地账本 (.jsonl)</span>
         </button>
+
+        {/* 轻量底座运行模式指示 */}
+        <div className="flex items-center justify-between px-1 text-[10px] font-mono text-[#8F887D]">
+          <span className="flex items-center space-x-1">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                bridgeConnected ? 'bg-emerald-500 animate-pulse' : 'bg-[#A8A29E]'
+              }`}
+            />
+            <span>{bridgeConnected ? 'Bridge 监听就绪 (4560)' : '纯离线复盘模式'}</span>
+          </span>
+          <span title="本地零外网，完全在客户端解析">Local-First</span>
+        </div>
       </div>
     </aside>
   )

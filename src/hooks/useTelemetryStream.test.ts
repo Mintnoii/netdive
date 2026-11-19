@@ -17,6 +17,7 @@ import {
   resolveSessionTitle,
   formatRelativeTime,
 } from '../types/telemetry'
+import { FLOW_LAYOUT } from '../services/flowLayout'
 
 describe('useTelemetryStream & Causal DAG Multi-Session Engine', () => {
   describe('1. resolveCausalConnection 纯函数与 OpenTelemetry Active Span 契约', () => {
@@ -556,11 +557,11 @@ describe('useTelemetryStream & Causal DAG Multi-Session Engine', () => {
       ]
       // 主干顺延
       const mainPos = calculateNodePosition({ isCorrectionBranch: false }, 'p1', existing)
-      assert.deepEqual(mainPos, { x: 330, y: 180 })
+      assert.deepEqual(mainPos, { x: 50 + FLOW_LAYOUT.stepX, y: 180 })
 
       // 自愈分支下沉
       const branchPos = calculateNodePosition({ isCorrectionBranch: true }, 'p1', existing)
-      assert.deepEqual(branchPos, { x: 330, y: 340 })
+      assert.deepEqual(branchPos, { x: 50 + FLOW_LAYOUT.stepX, y: 180 + FLOW_LAYOUT.branchOffset })
     })
 
     it('useTelemetryStream hook 模块正确导出全部契约函数与单例', () => {

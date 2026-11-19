@@ -7,13 +7,9 @@ import {
   RotateCcw,
   ShieldCheck,
   Database,
-  Zap,
   Sparkles,
-  Flame,
   CheckCircle2,
   AlertTriangle,
-  Clock,
-  Coins,
   BookOpen,
   Info,
   Trash2,
@@ -238,7 +234,7 @@ export const CompactorLabPage: React.FC = () => {
           <div className="bg-[#FFFFFF] border border-[#E5E0D8] rounded-xl p-4 shadow-xs relative overflow-hidden">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-[#6E685E]">沙盒试算节约率 (Ratio)</span>
-              <Flame className="w-4 h-4 text-emerald-600" />
+              <span className="text-xs font-mono text-[#8F887D]">Rule 1~3</span>
             </div>
             <div className="mt-2 flex items-baseline space-x-1">
               <span className="text-2xl font-bold font-mono text-emerald-700">
@@ -258,7 +254,7 @@ export const CompactorLabPage: React.FC = () => {
           <div className="bg-[#FFFFFF] border border-[#E5E0D8] rounded-xl p-4 shadow-xs">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-[#6E685E]">本沙盒试算释放</span>
-              <Zap className="w-4 h-4 text-amber-600" />
+              <span className="text-xs font-mono text-[#8F887D]">Tokens</span>
             </div>
             <div className="mt-2 flex items-baseline space-x-1">
               <span className="text-2xl font-bold font-mono text-[#1E2024]">
@@ -278,15 +274,15 @@ export const CompactorLabPage: React.FC = () => {
             <div>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-[#6E685E]">大模型调用成本 (Cost)</span>
-                <Coins className="w-4 h-4 text-sky-600" />
+                <span className="text-xs font-mono text-[#8F887D]">$0 Extra</span>
               </div>
               <div className="mt-2 flex items-baseline space-x-1">
-                <span className="text-2xl font-bold font-mono text-sky-800">$0.00</span>
+                <span className="text-2xl font-bold font-mono text-[#1E2024]">$0.00</span>
                 <span className="text-xs text-[#8F887D]">USD</span>
               </div>
             </div>
             <p className="text-[11px] text-[#5E6573] mt-2 pt-2 border-t border-[#F4F0EA] leading-relaxed">
-              💡 纯本地首尾行截取试算，零大模型调用开销。
+              纯本地首尾行截取试算，零大模型调用开销。
             </p>
           </div>
 
@@ -295,15 +291,15 @@ export const CompactorLabPage: React.FC = () => {
             <div>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-[#6E685E]">试算推理延迟 (Latency)</span>
-                <Clock className="w-4 h-4 text-purple-600" />
+                <span className="text-xs font-mono text-[#8F887D]">&lt;1ms</span>
               </div>
               <div className="mt-2 flex items-baseline space-x-1">
-                <span className="text-2xl font-bold font-mono text-purple-800">&lt; 1ms</span>
+                <span className="text-2xl font-bold font-mono text-[#1E2024]">&lt; 1ms</span>
                 <span className="text-xs text-[#8F887D]">in-memory</span>
               </div>
             </div>
             <p className="text-[11px] text-[#5E6573] mt-2 pt-2 border-t border-[#F4F0EA] leading-relaxed">
-              ⚡ 纯前端内存切分，微秒级即刻反馈。
+              纯前端内存切分，微秒级即刻反馈。
             </p>
           </div>
         </div>
@@ -533,7 +529,7 @@ export const CompactorLabPage: React.FC = () => {
                 <h2 className="text-sm font-semibold text-[#1E2024]">
                   本沙盒实例 WAL 存根与原文回放
                 </h2>
-                <span className="text-[10px] font-mono text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                <span className="text-[10px] font-mono text-[#5C5549] bg-[#EAE4D9] px-2 py-0.5 rounded border border-[#D5CDBD]">
                   沙盒实例 wal-lab-*，仅存于本页内存
                 </span>
               </div>

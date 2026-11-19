@@ -15,6 +15,7 @@ import {
 } from './transcriptParser'
 import { REALISTIC_PI_TRANSCRIPT_SAMPLE } from '../fixtures/sampleTranscript'
 import { resolveContextWindow } from './modelWindows'
+import { FLOW_LAYOUT } from './flowLayout'
 import type { TelemetryEvent, MacroTurnGroup } from '../types/telemetry'
 
 describe('NetDive Transcript Parser Engine', () => {
@@ -369,16 +370,16 @@ describe('NetDive Transcript Parser Engine', () => {
       assert(edges.length >= parsed.events.length - 1)
 
       // 检查首节点
-      assert.equal(nodes[0].position.x, 50)
-      assert.equal(nodes[0].position.y, 180)
+      assert.equal(nodes[0].position.x, FLOW_LAYOUT.startX)
+      assert.equal(nodes[0].position.y, FLOW_LAYOUT.baseY)
 
       // 检查后续节点水平递增
-      assert.equal(nodes[1].position.x, 330)
+      assert.equal(nodes[1].position.x, FLOW_LAYOUT.startX + FLOW_LAYOUT.stepX)
 
-      // 检查自愈失败节点（isCorrectionBranch === true）位于分支 Y 轴 (340)
+      // 检查自愈失败节点（isCorrectionBranch === true）位于分支 Y 轴 (baseY + branchOffset)
       const failNode = nodes.find((n) => n.id === 'call_bash_test_initial')
       assert(failNode)
-      assert.equal(failNode.position.y, 340)
+      assert.equal(failNode.position.y, FLOW_LAYOUT.baseY + FLOW_LAYOUT.branchOffset)
 
       // 检查自愈分支边带有琥珀金色
       const branchEdge = edges.find((e) => e.target === 'call_bash_test_initial')
@@ -396,34 +397,34 @@ describe('NetDive Transcript Parser Engine', () => {
         gesture: i % 2 === 0 ? 'think' : 'edit',
         title: `Step ${i}`,
         status: 'completed',
-        isCorrectionBranch: i === 7, // 第 7 个节点（Row 1 Col 1）作为自愈分支节点
+        isCorrectionBranch: i === 7, // 第 7 个节点（Row 1 Col 2）作为自愈分支节点
       }))
 
       const { nodes, edges } = eventsToFlowNodesAndEdges(dummyEvents)
       assert.equal(nodes.length, 14)
       assert.equal(edges.length, 13)
 
-      // 验证 Row 0 (nodes 0..5, nodesPerRow = 6)
-      assert.equal(nodes[0].position.x, 50)
-      assert.equal(nodes[0].position.y, 180)
-      assert.equal(nodes[5].position.x, 50 + 5 * 280) // 1450
-      assert.equal(nodes[5].position.y, 180)
+      // 验证 Row 0 (nodes 0..4, nodesPerRow = 5)
+      assert.equal(nodes[0].position.x, FLOW_LAYOUT.startX)
+      assert.equal(nodes[0].position.y, FLOW_LAYOUT.baseY)
+      assert.equal(nodes[4].position.x, FLOW_LAYOUT.startX + 4 * FLOW_LAYOUT.stepX)
+      assert.equal(nodes[4].position.y, FLOW_LAYOUT.baseY)
 
-      // 验证 Row 1 折行 (nodes 6..11, rowGap = 340)
-      assert.equal(nodes[6].position.x, 50)
-      assert.equal(nodes[6].position.y, 180 + 340) // 520
-      // 验证 Node 7 作为自愈分支下沉 (branchOffset = 160)
-      assert.equal(nodes[7].position.x, 330)
-      assert.equal(nodes[7].position.y, 520 + 160) // 680
+      // 验证 Row 1 折行 (nodes 5..9, rowGap = 380)
+      assert.equal(nodes[5].position.x, FLOW_LAYOUT.startX)
+      assert.equal(nodes[5].position.y, FLOW_LAYOUT.baseY + FLOW_LAYOUT.rowGap)
+      // 验证 Node 7 作为自愈分支下沉 (Row 1 Col 2, branchOffset = 180)
+      assert.equal(nodes[7].position.x, FLOW_LAYOUT.startX + 2 * FLOW_LAYOUT.stepX)
+      assert.equal(nodes[7].position.y, FLOW_LAYOUT.baseY + FLOW_LAYOUT.rowGap + FLOW_LAYOUT.branchOffset)
 
-      // 验证 Row 2 折行 (nodes 12..13)
-      assert.equal(nodes[12].position.x, 50)
-      assert.equal(nodes[12].position.y, 180 + 2 * 340) // 860
-      assert.equal(nodes[13].position.x, 330)
-      assert.equal(nodes[13].position.y, 860)
+      // 验证 Row 2 折行 (nodes 10..13)
+      assert.equal(nodes[10].position.x, FLOW_LAYOUT.startX)
+      assert.equal(nodes[10].position.y, FLOW_LAYOUT.baseY + 2 * FLOW_LAYOUT.rowGap)
+      assert.equal(nodes[11].position.x, FLOW_LAYOUT.startX + FLOW_LAYOUT.stepX)
+      assert.equal(nodes[11].position.y, FLOW_LAYOUT.baseY + 2 * FLOW_LAYOUT.rowGap)
 
       // 验证跨行边正常连接
-      const crossRowEdge = edges.find((e) => e.source === 'node-grid-5' && e.target === 'node-grid-6')
+      const crossRowEdge = edges.find((e) => e.source === 'node-grid-4' && e.target === 'node-grid-5')
       assert(crossRowEdge)
       assert.equal(crossRowEdge.type, 'smoothstep')
     })
@@ -442,12 +443,12 @@ describe('NetDive Transcript Parser Engine', () => {
       assert.equal(nodes.length, 8)
 
       // Node 3 在 Row 0 Col 3
-      assert.equal(nodes[3].position.x, 50 + 3 * 280) // 890
-      assert.equal(nodes[3].position.y, 180)
+      assert.equal(nodes[3].position.x, FLOW_LAYOUT.startX + 3 * FLOW_LAYOUT.stepX)
+      assert.equal(nodes[3].position.y, FLOW_LAYOUT.baseY)
 
       // Node 4 折行至 Row 1 Col 0
-      assert.equal(nodes[4].position.x, 50)
-      assert.equal(nodes[4].position.y, 520)
+      assert.equal(nodes[4].position.x, FLOW_LAYOUT.startX)
+      assert.equal(nodes[4].position.y, FLOW_LAYOUT.baseY + FLOW_LAYOUT.rowGap)
     })
 
     it('produces lean view-model nodes without megabyte payload or observation copies', () => {
@@ -1463,7 +1464,7 @@ describe('NetDive Transcript Parser Engine', () => {
       // 验证坐标排版
       assert.equal(nodes[0].position.x, 50)
       assert.equal(nodes[0].position.y, 180)
-      assert.equal(nodes[1].position.x, 50 + 360)
+      assert.equal(nodes[1].position.x, 50 + 450)
       assert.equal(nodes[1].position.y, 180)
 
       // 验证连接边
@@ -1520,11 +1521,11 @@ describe('NetDive Transcript Parser Engine', () => {
       assert.equal(result1.nodes[1].data.isExpanded, false)
       assert.equal(result1.nodes[2].data.isExpanded, false)
 
-      // turn-1 位于 50，宽度 460，GAP 40 => turn-2 位于 50 + 460 + 40 = 550
+      // turn-1 位于 50，宽度 460，GAP 130 => turn-2 位于 50 + 460 + 130 = 640
       assert.equal(result1.nodes[0].position.x, 50)
-      assert.equal(result1.nodes[1].position.x, 550)
-      // turn-2 宽度 320，GAP 40 => turn-3 位于 550 + 320 + 40 = 910
-      assert.equal(result1.nodes[2].position.x, 910)
+      assert.equal(result1.nodes[1].position.x, 640)
+      // turn-2 宽度 320，GAP 130 => turn-3 位于 640 + 320 + 130 = 1090
+      assert.equal(result1.nodes[2].position.x, 1090)
 
       // 2. 测试展开多个节点 (turn-1 与 turn-2 同时展开)
       const expandedMultiple = new Set(['turn-1', 'turn-2'])
@@ -1534,10 +1535,10 @@ describe('NetDive Transcript Parser Engine', () => {
       assert.equal(result2.nodes[1].data.isExpanded, true)
       assert.equal(result2.nodes[2].data.isExpanded, false)
 
-      // turn-1: 50, turn-2: 550, turn-3: 550 + 460 + 40 = 1050
+      // turn-1: 50, turn-2: 640, turn-3: 640 + 460 + 130 = 1230
       assert.equal(result2.nodes[0].position.x, 50)
-      assert.equal(result2.nodes[1].position.x, 550)
-      assert.equal(result2.nodes[2].position.x, 1050)
+      assert.equal(result2.nodes[1].position.x, 640)
+      assert.equal(result2.nodes[2].position.x, 1230)
 
       // 3. 测试通过 options 传入 onToggleExpand 与 onDrillDown 回调并透传至 node.data
       let toggledId = ''

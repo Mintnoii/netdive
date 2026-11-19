@@ -202,7 +202,7 @@ NetDive 的定位是**旁路观测与拦截控制台**（见 `docs/POSITIONING.m
 
 ## 八、下一步：双会话差分视图
 
-**状态**：已具备契约基础，未排期实现。
+**状态**：已具备契约基础，未排期实现。失败会话转回归用例已先行落地，见 `openspec/changes/trace-to-regression-case/`；本节指同一个页面里同时选两份 JSONL 的对照视图。
 
 `context-health-report` 已经把单次会话报告收敛为 `ContextHealthReport`。双会话差分直接比较两份报告即可，不需要重新解析事件：
 

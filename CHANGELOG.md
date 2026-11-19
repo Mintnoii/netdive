@@ -1,5 +1,23 @@
 # Changelog
 
+## 未发布 — 失败 trace 转回归用例落地 (2026-11-19)
+
+把复盘数据推进到验证环节。规约见 `openspec/changes/trace-to-regression-case/`。
+
+### 变更
+
+- 新增 `src/services/regressionCase.ts`：从失败节点冻结证据与基线，导入新会话后逐项对照失败指纹、失败总数、峰值水位、回收字符、前缀稳定性与门禁次数；
+- 新增 `regressionCaseStore`，用例落在 localStorage，刷新不丢，支持删除与 Markdown 导出；
+- 新增独立页面 `RegressionPage` 与 HeaderNav「回归工作台」Tab，页面与回放平级；
+- 新增 5 项契约单测，浏览器实测创建用例、刷新保留、导入对照会话并得到检查结果；
+- 真实本地数据测试暴露了失败指纹塌缩问题：本地会话大多没有 `assertion.rule`，全部归并成 `failed`。已改为按「状态 + 命令或标题」归一化指纹，长命令压成单行并截断到 120 字符；
+- 抽样 40 个 `~/.pi/agent/sessions/*.jsonl` 实测：同会话复现全部命中，跨会话对照能区分具体失败，模拟移除某条失败后对应检查变为通过；
+- 新增 `docs/SESSION_DATA_DIRECTIONS.md`，记录六类会话数据二次利用方向与推荐顺序。
+
+### 校验
+
+`pnpm test` 378 pass / 0 fail；`pnpm build` 零类型错误；真实本地会话 40 个抽样验证通过。
+
 ## 未发布 — 会话复盘诊断报告落地 (2026-11-19)
 
 把回放数据从「能看」推进到「能给出改法」。规约见 `openspec/changes/context-health-report/`。

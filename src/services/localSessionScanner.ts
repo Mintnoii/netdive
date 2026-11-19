@@ -24,6 +24,8 @@ export interface LocalSessionEntry {
   mtime: number
   size: number
   project: string
+  hasFailures?: boolean
+  caseTag?: string
 }
 
 /** 单行 JSON 解析（包一层箭头函数，规避 JSON.parse reviver 重载歧义） */
@@ -148,7 +150,8 @@ export function scanLocalSessions(limit = 30, root: string = localSessionsRoot()
 
   if (scanErr || !folders) return []
 
-  const entries = folders.flatMap((folder) => {
+  // 第一阶段：轻量 stat 快速索引候选文件元数据，严禁全量载入 400MB+ 物理内容
+  const candidates = folders.flatMap((folder) => {
     const folderPath = join(root, folder)
     const project = resolveProjectName(folder)
 
@@ -161,27 +164,56 @@ export function scanLocalSessions(limit = 30, root: string = localSessionsRoot()
     return fileNames.flatMap((fileName) => {
       const fullPath = join(folderPath, fileName)
       const [statErr, stats] = tryit(() => statSync(fullPath))()
-      const [readFileErr, raw] = tryit(() => readFileSync(fullPath, 'utf-8'))()
-
-      if (statErr || readFileErr || !stats || !raw) return []
+      if (statErr || !stats) return []
 
       return [
         {
-          id: resolveSessionId(fileName),
           fileName,
-          title: extractSessionTitle(raw, fileName.replace(/\.jsonl$/, '')),
-          lineCount: countTranscriptLines(raw),
           folder,
           fullPath,
+          project,
           mtime: stats.mtimeMs,
           size: stats.size,
-          project,
-        } satisfies LocalSessionEntry,
+        },
       ]
     })
   })
 
-  return entries.sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+  // 按最新修改时间倒序预截断，仅对 top limit 个候选文件做深度内容提取
+  const topCandidates = candidates.sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+
+  // 第二阶段：仅对预截断后的文件读取物理内容与提取特征指纹
+  return topCandidates.flatMap((item) => {
+    const [readFileErr, raw] = tryit(() => readFileSync(item.fullPath, 'utf-8'))()
+    if (readFileErr || !raw) return []
+
+    const hasFailures =
+      raw.includes('"status":"failed"') ||
+      raw.includes('"status":"rejected"') ||
+      raw.includes('"passed":false') ||
+      /"exitCode":[1-9]/.test(raw) ||
+      /"isError":\s*true/.test(raw) ||
+      raw.includes('Command failed with exit code')
+
+    const caseTagMatch = raw.match(/<!--\s*\[netdive-case:\s*([^\]]+)\]\s*-->/)
+    const caseTag = caseTagMatch ? caseTagMatch[1].trim() : undefined
+
+    return [
+      {
+        id: resolveSessionId(item.fileName),
+        fileName: item.fileName,
+        title: extractSessionTitle(raw, item.fileName.replace(/\.jsonl$/, '')),
+        lineCount: countTranscriptLines(raw),
+        folder: item.folder,
+        fullPath: item.fullPath,
+        mtime: item.mtime,
+        size: item.size,
+        project: item.project,
+        hasFailures,
+        caseTag,
+      } satisfies LocalSessionEntry,
+    ]
+  })
 }
 
 /**

@@ -12,25 +12,25 @@ import type { Edge, Node } from '@xyflow/react'
 import type { TelemetryEvent, TelemetryStatus } from '../types/telemetry'
 import { BRANCH_EDGE_STYLE, FAILED_EDGE_STROKE, NEUTRAL_EDGE_STROKE } from './statusTone'
 
-/** 布局常量：与节点物理尺寸 (280px 卡片) 严格对齐 */
+/** 布局常量：与节点物理尺寸 (280px 卡片) 严格对齐，预留充足水平间隙使因果连线与箭头清晰可见 */
 export const FLOW_LAYOUT = {
   startX: 50,
-  stepX: 280,
+  stepX: 370,
   baseY: 180,
   branchOffset: 160,
-  rowGap: 340,
-  nodesPerRow: 6,
+  rowGap: 380,
+  nodesPerRow: 5,
   nodeHeight: 140,
 } as const
 
 /**
- * 回合卡片网格：宏观卡片尺寸与原子节点不同（360 步距 / 4 卡每行 / 280 行距）
- * 与 ATOM_GRID 显式区分，杜绝「同名不同值」误用
+ * 回合卡片网格：宏观卡片尺寸与原子节点不同（450 步距 / 4 卡每行 / 320 折叠宽）
+ * 预留 130px 水平间隙与清晰连线
  */
 export const TURN_GRID = {
-  stepX: 360,
+  stepX: 450,
   baseY: 180,
-  rowGap: 280,
+  rowGap: 300,
   nodesPerRow: 4,
   collapsedWidth: 320,
 } as const
@@ -86,6 +86,7 @@ export function createFlowEdge(params: FlowEdgeParams): Edge {
     target,
     type: 'smoothstep',
     animated: animated ?? (status === 'running' || !status),
+    zIndex: 10,
     style: resolveFlowEdgeStyle(isBranchEdge, status),
   }
 }

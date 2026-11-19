@@ -145,36 +145,91 @@ export const ContextHealthReportDrawer: React.FC<ContextHealthReportDrawerProps>
 
         <section>
           <SectionTitle>压缩机会</SectionTitle>
-          <div className="text-xs text-[#5C5549]">
-            扫描 {report.compaction.scannedCount} 项，命中 {report.compaction.hitCount} 项，预计回收{' '}
-            {formatTokens(report.compaction.totalReclaimedChars)} 字符。
-          </div>
-          <div className="mt-2 space-y-1">
-            {report.compaction.topOpportunities.slice(0, 3).map((opp) => (
-              <div key={opp.nodeId} className="text-[11px] font-mono text-[#8F887D] truncate">
-                {opp.nodeId} · {opp.toolName} · 回收 {opp.reclaimedChars}
+          {report.compaction.hitCount === 0 ? (
+            <div className="p-2.5 rounded-lg bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-900 flex items-center space-x-2">
+              <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>未检出超长冗余工具输出，上下文结构紧凑</span>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="text-xs text-[#5C5549]">
+                扫描 {report.compaction.scannedCount} 项，命中 {report.compaction.hitCount} 项，预计回收{' '}
+                <span className="font-semibold text-emerald-700 font-mono">
+                  {formatTokens(report.compaction.totalReclaimedChars)}
+                </span>{' '}
+                字符。
               </div>
-            ))}
-          </div>
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                {report.compaction.topOpportunities.map((opp) => (
+                  <div
+                    key={opp.nodeId}
+                    className="p-1.5 rounded bg-white border border-[#EDE8E0] text-[11px] font-mono text-[#5C5549] flex items-center justify-between"
+                  >
+                    <span className="truncate mr-2">
+                      {opp.toolName || 'tool'} · {opp.nodeId}
+                    </span>
+                    <span className="text-emerald-700 font-semibold shrink-0">
+                      -{opp.reclaimedChars} 字
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         <section>
           <SectionTitle>前缀稳定性</SectionTitle>
-          <div className="text-xs text-[#5C5549]">
-            状态 {report.prefix.status}，快照哈希 {report.prefix.hashCount} 个。
+          <div className="p-2.5 rounded-lg bg-white border border-[#E5E0D8] flex items-center justify-between text-xs">
+            <span className="text-[#5C5549]">Prompt Cache 前缀</span>
+            <span
+              className={`px-2 py-0.5 rounded font-mono text-[10px] font-semibold border ${
+                report.prefix.status === 'stable'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : report.prefix.status === 'drifted'
+                    ? 'bg-rose-50 text-rose-800 border-rose-200'
+                    : 'bg-slate-50 text-slate-700 border-slate-200'
+              }`}
+            >
+              {report.prefix.status === 'stable'
+                ? '✓ 稳定无漂移'
+                : report.prefix.status === 'drifted'
+                  ? '⚠️ 发生漂移'
+                  : '未知状态'}
+            </span>
           </div>
         </section>
 
         <section>
           <SectionTitle>失败与门禁</SectionTitle>
-          <div className="text-xs text-[#5C5549]">
-            失败 {report.failures.total} 个，门禁 {report.gates.length} 次。
-          </div>
-          {report.failures.groups.slice(0, 3).map((item) => (
-            <div key={item.rule} className="mt-1 text-[11px] font-mono text-[#8F887D] truncate">
-              {item.rule} ×{item.count} · {item.nodeIds.slice(0, 2).join(', ')}
+          {report.failures.total === 0 && report.gates.length === 0 ? (
+            <div className="p-2.5 rounded-lg bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-900 flex items-center space-x-2">
+              <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>全链路健康：未发生执行失败或人工拦截门禁 (0 异常)</span>
             </div>
-          ))}
+          ) : (
+            <div className="space-y-2">
+              <div className="text-xs text-rose-800 font-semibold flex items-center justify-between">
+                <span>检出异常状态</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-rose-50 text-rose-700 border border-rose-200">
+                  失败 {report.failures.total} · 门禁 {report.gates.length}
+                </span>
+              </div>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                {report.failures.groups.map((item) => (
+                  <div
+                    key={item.rule}
+                    className="p-2 rounded bg-rose-50/70 border border-rose-100 text-[11px] font-mono text-rose-900 flex items-center justify-between"
+                  >
+                    <span className="truncate mr-2">{item.rule}</span>
+                    <span className="text-rose-700 font-semibold shrink-0">
+                      触发 {item.count} 次
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         <section>

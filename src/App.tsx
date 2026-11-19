@@ -5,6 +5,7 @@ import {
   MiniMap,
   ReactFlowProvider,
   useReactFlow,
+  applyNodeChanges,
   type Node,
   type Edge,
   type NodeChange,
@@ -21,6 +22,8 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
+  HelpCircle,
+  Compass,
 } from 'lucide-react'
 import { AgentNodeMemo } from './components/AgentNode'
 import { TurnNodeMemo } from './components/TurnNode'
@@ -37,12 +40,16 @@ import { HeaderNav, type StudioTab } from './components/HeaderNav'
 import { SessionListSidebar } from './components/SessionListSidebar'
 import { ContextHealthReportDrawer } from './components/ContextHealthReportDrawer'
 import { buildContextHealthReport } from './services/contextHealthReport'
+import { SHOWCASE_SCENARIOS } from './fixtures/showcaseSessions'
 // 非首屏页面按需加载，首屏承担会话回放
-const CompactorLabPage = lazy(() =>
-  import('./pages/CompactorLabPage').then((mod) => ({ default: mod.CompactorLabPage }))
+const OverviewPage = lazy(() =>
+  import('./pages/OverviewPage').then((mod) => ({ default: mod.OverviewPage }))
 )
 const ContextLabPage = lazy(() =>
   import('./pages/ContextLabPage').then((mod) => ({ default: mod.ContextLabPage }))
+)
+const RegressionPage = lazy(() =>
+  import('./pages/RegressionPage').then((mod) => ({ default: mod.RegressionPage }))
 )
 const ShowcasePage = lazy(() =>
   import('./pages/ShowcasePage').then((mod) => ({ default: mod.ShowcasePage }))
@@ -164,8 +171,15 @@ const defaultMockEvents: TelemetryEvent[] = [
   },
 ]
 
+// 默认画布网格排版参数：单行容纳 8 步，使微观拓扑（通常 6~8 步）在一行内自然舒展展开，彻底消除反向逆行大框
+const CANVAS_FLOW_GRID_OPTIONS = {
+  nodesPerRow: 8,
+  branchOffset: 160,
+  rowGap: 340,
+}
+
 // 初始默认静态节点与连线（由 defaultMockEvents 直出）
-const initialDefaultFlow = eventsToFlowNodesAndEdges(defaultMockEvents)
+const initialDefaultFlow = eventsToFlowNodesAndEdges(defaultMockEvents, CANVAS_FLOW_GRID_OPTIONS)
 const defaultMockNodes: Node[] = initialDefaultFlow.nodes
 const defaultMockEdges: Edge[] = initialDefaultFlow.edges
 
@@ -220,6 +234,57 @@ const PageLoadingHint: React.FC<{ label: string }> = ({ label }) => (
   </div>
 )
 
+/**
+ * 5 大精选工业级案卷：涵盖双焦回合、死循环自愈、微压缩与人机门禁，开箱即可完整演练
+ */
+const CURATED_SESSIONS: ActiveSessionItem[] = [
+  {
+    id: 'demo-session',
+    title: 'Ghost 管道重构与自愈闭环',
+    actors: ['Pi (Coordinator)', 'Claude 3.7 (Worker)'],
+    status: 'completed',
+    nodeCount: 8,
+    updatedAt: Date.now() - 1000 * 60 * 5,
+    project: 'Ghost',
+  },
+  {
+    id: 'hierarchical-focus',
+    title: '宏微双焦复合回合编排与微观下钻',
+    actors: ['Human Operator', 'Pi (Coordinator)', 'Claude 3.7'],
+    status: 'completed',
+    nodeCount: 12,
+    updatedAt: Date.now() - 1000 * 60 * 20,
+    project: 'NetDive',
+  },
+  {
+    id: 'loop-resonance',
+    title: '死循环检测与确定性自动熔断',
+    actors: ['Claude 3.7 (Worker)'],
+    status: 'failed',
+    nodeCount: 10,
+    updatedAt: Date.now() - 1000 * 60 * 45,
+    project: 'Core',
+  },
+  {
+    id: 'micro-compactor',
+    title: '长上下文确定性微压缩与缓存保护',
+    actors: ['Vite', 'TypeScript Worker'],
+    status: 'completed',
+    nodeCount: 7,
+    updatedAt: Date.now() - 1000 * 60 * 90,
+    project: 'NetDive',
+  },
+  {
+    id: 'hitl-gate',
+    title: '高危命令拦截与跨进程人机门禁',
+    actors: ['Pi (Coordinator)', 'Human Operator'],
+    status: 'gate',
+    nodeCount: 5,
+    updatedAt: Date.now() - 1000 * 60 * 180,
+    project: 'Bebop',
+  },
+]
+
 function MainFlowCanvas() {
   const {
     onEdgesChange,
@@ -230,7 +295,6 @@ function MainFlowCanvas() {
     bridge,
     watermark,
     setWatermark,
-    sessionsList,
     activeSessionId,
     setActiveSessionId,
     activeSessionMeta,
@@ -249,7 +313,16 @@ function MainFlowCanvas() {
 
   useEffect(() => {
     const handleRouteChange = () => {
-      setRoutePath(window.location.pathname.toLowerCase() + window.location.hash.toLowerCase())
+      const fullPath = window.location.pathname.toLowerCase() + window.location.hash.toLowerCase()
+      setRoutePath(fullPath)
+      const hash = window.location.hash.toLowerCase()
+      if (hash.includes('regression')) {
+        setActiveTab('regression')
+      } else if (hash.includes('context') || hash.includes('lab')) {
+        setActiveTab('context')
+      } else if (!hash || hash === '#' || hash === '#live') {
+        setActiveTab('live')
+      }
     }
     window.addEventListener('popstate', handleRouteChange)
     window.addEventListener('hashchange', handleRouteChange)
@@ -269,8 +342,27 @@ function MainFlowCanvas() {
     )
   }, [routePath])
 
-  // Studio 内部子 Tab：'live' (执行控制台) | 'lab' (压缩沙盒)
-  const [activeTab, setActiveTab] = useState<StudioTab>('live')
+  // Studio 内部子 Tab：'overview' (主页概览) | 'live' (会话回放) | 'regression' (测试对比) | 'context' (上下文演练)
+  const [activeTab, setActiveTab] = useState<StudioTab>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash.toLowerCase()
+      if (hash.includes('live')) return 'live'
+      if (hash.includes('regression')) return 'regression'
+      if (hash.includes('context') || hash.includes('lab')) return 'context'
+      if (hash.includes('overview')) return 'overview'
+    }
+    // 默认首选概览主页，让用户第一眼看明白各个模块是干嘛的
+    return 'overview'
+  })
+
+  const handleTabChange = useCallback((tab: StudioTab) => {
+    setActiveTab(tab)
+    setIsHealthReportOpen(false)
+    setIsInspectorOpen(false)
+    if (typeof window !== 'undefined') {
+      window.location.hash = tab === 'overview' ? '' : `#${tab}`
+    }
+  }, [])
   const [isInspectorOpen, setIsInspectorOpen] = useState(false)
   const [selectedDetailsNode, setSelectedDetailsNode] = useState<Node | null>(null)
   // 仅记录被人类拖动过的节点位移，避免把整份派生节点镜像回状态
@@ -280,7 +372,12 @@ function MainFlowCanvas() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [isDiagnosticCopied, setIsDiagnosticCopied] = useState(false)
   const [isHealthReportOpen, setIsHealthReportOpen] = useState(false)
+  const [isGuideOpen, setIsGuideOpen] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  // 追踪节点拖拽排版交互：区分物理拖拽排版与单纯点击查看详情
+  const hasNodeDraggedRef = useRef(false)
+  const dragFinishedTimeRef = useRef(0)
+  const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null)
 
   // 双焦视图模式：'turns' (宏观回合) | 'flat' (全量流水)
   const [viewMode, setViewMode] = useState<'turns' | 'flat'>('turns')
@@ -288,27 +385,13 @@ function MainFlowCanvas() {
   // 微观下钻选中的 Turn ID (为 null 时处于宏观总览态)
   const [activeDrilldownTurnId, setActiveDrilldownTurnId] = useState<string | null>(null)
 
-  // 缓存当前会话的原始事件流水 (rawEvents)，作为同构折叠与拓扑重算的单一真理源。
-  // 首屏保持空态，只有选中真实会话、导入账本或显式点击演示会话时才填充。
-  const [rawEvents, setRawEvents] = useState<TelemetryEvent[]>([])
-  const [resetKey, setResetKey] = useState<number>(0)
+  // 用户手动导入的外部/本地账本
+  const [importedSessions, setImportedSessions] = useState<ActiveSessionItem[]>([])
 
-  // 初次加载时，若本地存在真实会话，自动优先激活首个真实会话，不再默认停留在演示沙盒
-  const hasAutoSwitchedRef = useRef(false)
-  useEffect(() => {
-    if (!hasAutoSwitchedRef.current && bridge.localSessions.length > 0) {
-      hasAutoSwitchedRef.current = true
-      const firstRealSession = bridge.localSessions[0]
-      setActiveSessionId(firstRealSession.id)
-      bridge.fetchSessionTranscript(firstRealSession.id).then((text) => {
-        if (text && text.trim()) {
-          const parsed = parseTranscript(text)
-          setRawEvents(parsed.events)
-          setWatermark(parsed.watermark || BASE_CONTEXT_WATERMARK)
-        }
-      })
-    }
-  }, [bridge.localSessions, bridge, setActiveSessionId, setWatermark])
+  // 缓存当前会话的原始事件流水 (rawEvents)，作为同构折叠与拓扑重算的单一真理源。
+  // 首屏默认装载精选案卷（defaultMockEvents），保证开箱即有完整因果 DAG 与水位呈现，彻底告别灰色死屏
+  const [rawEvents, setRawEvents] = useState<TelemetryEvent[]>(defaultMockEvents)
+  const [resetKey, setResetKey] = useState<number>(0)
 
   // 复盘诊断报告由纯函数从事件流与水位派生，抽屉与导出共用同一对象
   const healthReport = useMemo(
@@ -373,7 +456,10 @@ function MainFlowCanvas() {
         const displayTurnEvents = aggregateConsecutiveToolEvents(currentTurnAllEvents, {
           enabled: isFoldingEnabled,
         })
-        const { nodes: microNodes, edges: microEdges } = eventsToFlowNodesAndEdges(displayTurnEvents)
+        const { nodes: microNodes, edges: microEdges } = eventsToFlowNodesAndEdges(
+          displayTurnEvents,
+          CANVAS_FLOW_GRID_OPTIONS
+        )
         return { derivedNodes: microNodes, derivedEdges: microEdges }
       }
 
@@ -388,7 +474,10 @@ function MainFlowCanvas() {
 
     // 全量流水模式 (Flat Trace)：平铺呈现原子工具调用，并支持连续同构调用折叠
     const displayEvents = aggregateConsecutiveToolEvents(rawEvents, { enabled: isFoldingEnabled })
-    const { nodes: fn, edges: fe } = eventsToFlowNodesAndEdges(displayEvents)
+    const { nodes: fn, edges: fe } = eventsToFlowNodesAndEdges(
+      displayEvents,
+      CANVAS_FLOW_GRID_OPTIONS
+    )
     return { derivedNodes: fn, derivedEdges: fe }
   }, [rawEvents, viewMode, effectiveActiveDrilldownTurnId, activeTurn, currentTurnAllEvents, macroTurns, isFoldingEnabled])
 
@@ -401,35 +490,11 @@ function MainFlowCanvas() {
     [derivedNodes, eventsMap]
   )
 
-  /**
-   * 画布节点变更吸收器：仅记录人类拖拽产生的位移覆盖，
-   * 选中态由 selectedNodeId 单向注入，其余变更不落状态，避免整份节点镜像。
-   */
-  const handleDerivedNodesChange = useCallback((changes: NodeChange[]) => {
-    const moves = changes.filter(
-      (change): change is Extract<NodeChange, { type: 'position' }> =>
-        change.type === 'position' && Boolean(change.position)
-    )
-
-    if (moves.length === 0) return
-
-    setPositionOverrides((prev) => {
-      const next = { ...prev }
-      for (const move of moves) {
-        if (move.position) next[move.id] = move.position
-      }
-      return next
-    })
-  }, [])
-
-  // 当前时间轴截断渲染的节点与边（根据 timelineStep 进行时光切片回放）
-  const { visibleNodes, visibleEdges } = useMemo(() => {
-    if (totalNodesCount === 0) {
-      return { visibleNodes: [], visibleEdges: [] }
-    }
-    // 0 或 >= totalNodesCount 表示呈现全量最新态
+  // 当前时间轴截断渲染的节点集合
+  const visibleNodes = useMemo(() => {
+    if (totalNodesCount === 0) return []
     const step = timelineStep > 0 ? Math.min(timelineStep, totalNodesCount) : totalNodesCount
-    const sliced = derivedNodes.slice(0, step).map((node) => {
+    return derivedNodes.slice(0, step).map((node) => {
       const override = positionOverrides[node.id]
       const isSelected = node.id === selectedNodeId
       if (!override && node.selected === isSelected) return node
@@ -439,12 +504,32 @@ function MainFlowCanvas() {
         selected: isSelected,
       }
     })
-    const slicedIds = new Set(sliced.map((n) => n.id))
-    const slicedEdges = derivedEdges.filter(
-      (e) => slicedIds.has(e.source) && slicedIds.has(e.target)
-    )
-    return { visibleNodes: sliced, visibleEdges: slicedEdges }
-  }, [derivedNodes, derivedEdges, timelineStep, totalNodesCount, positionOverrides, selectedNodeId])
+  }, [derivedNodes, timelineStep, totalNodesCount, positionOverrides, selectedNodeId])
+
+  // 受控当前画布节点状态：通过 React Flow 官方 applyNodeChanges 驱动，保证拖拽期间尺寸与 dragging 状态完备
+  const [activeFlowNodes, setActiveFlowNodes] = useState<Node[]>([])
+
+  useEffect(() => {
+    setActiveFlowNodes(visibleNodes)
+  }, [visibleNodes])
+
+  /**
+   * 画布节点变更吸收器：使用 React Flow 官方 applyNodeChanges 纯函数
+   * 完整保留 dragging 与 measured 尺寸，确保 EdgeRenderer 实时根据 Handle 计算坐标，彻底根除连线看不见的问题
+   */
+  const handleFlowNodesChange = useCallback((changes: NodeChange[]) => {
+    setActiveFlowNodes((currentNodes) => applyNodeChanges(changes, currentNodes))
+  }, [])
+
+  // 当前时间轴截断渲染的边集合：
+  // 关键优化：边只取决于连接拓扑与截断步数，绝不依赖 positionOverrides！
+  // 保持 visibleEdges 数组引用稳定，杜绝拖拽过程中 React Flow 逐帧全量重构 SVG 导致连线闪烁和消失
+  const visibleEdges = useMemo(() => {
+    if (totalNodesCount === 0) return []
+    const step = timelineStep > 0 ? Math.min(timelineStep, totalNodesCount) : totalNodesCount
+    const slicedNodeIds = new Set(derivedNodes.slice(0, step).map((n) => n.id))
+    return derivedEdges.filter((e) => slicedNodeIds.has(e.source) && slicedNodeIds.has(e.target))
+  }, [derivedNodes, derivedEdges, timelineStep, totalNodesCount])
 
   // 判断当前选中的会话是否处于活跃运行/待审批状态
   const isCurrentSessionActive = activeSessionMeta?.status === 'running' || activeSessionMeta?.status === 'gate'
@@ -515,28 +600,10 @@ function MainFlowCanvas() {
     node: Node
   } | null>(null)
 
-  // 稳定静态的本地会话列表模型：绝对单一依赖 bridge.localSessions，绝不随内存状态动态篡改导致重排与错位
+  // 侧边栏案卷列表：精选案卷为核心，用户手动导入的会话置顶合并
   const displaySessionsList: ActiveSessionItem[] = useMemo(() => {
-    // 1. 保留沙盒演示会话
-    const demoItems = sessionsList.filter((s) => s.id === 'demo-session' || s.id === 'default-session')
-
-    // 2. 本地真实会话 100% 严格使用扫描到的物理文件元数据与真实行数步数
-    const localItems: ActiveSessionItem[] = bridge.localSessions.map((ls) => {
-      // 仅提取运行中状态
-      const memSession = sessionsList.find((s) => s.id === ls.id)
-      return {
-        id: ls.id,
-        title: ls.title || ls.fileName,
-        actors: ['Pi (Harness)'],
-        status: memSession?.status || 'completed',
-        nodeCount: ls.lineCount || memSession?.nodeCount || 1, // 真实行数/步数，彻底消灭 size/2000 的虚标！
-        updatedAt: ls.mtime,
-        project: ls.project,
-      }
-    })
-
-    return [...demoItems, ...localItems]
-  }, [bridge.localSessions, sessionsList])
+    return [...importedSessions, ...CURATED_SESSIONS]
+  }, [importedSessions])
 
   // 若当前处于 /showcase 独立展示路由，全屏呈现自包含展示页，不渲染工作台顶栏、侧边栏、执行控制台与压缩沙盒
   if (isShowcaseRoute) {
@@ -558,20 +625,62 @@ function MainFlowCanvas() {
 
           <HeaderNav
             activeTab={activeTab}
-            onChangeTab={setActiveTab}
+            onChangeTab={handleTabChange}
             bridgeConnected={bridge.isConnected}
           />
+        </div>
+
+        {/* 右侧轻量状态与帮助指引 */}
+        <div className="flex items-center space-x-2.5">
+          <div
+            className={`flex items-center space-x-1.5 px-2 py-0.5 rounded text-[11px] font-mono border ${
+              bridge.isConnected
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                : 'bg-[#F2EDE4] text-[#706A5F] border-[#DCD5C9]'
+            }`}
+            title={
+              bridge.isConnected
+                ? 'Bridge 伴生服务已联通 (127.0.0.1:4560)：支持自动扫描本地会话与实时门禁挂起'
+                : '纯本地离线复盘模式：无需启动伴生后台，随时拖入 .jsonl 或点选案卷'
+            }
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                bridge.isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-[#9E978C]'
+              }`}
+            />
+            <span>{bridge.isConnected ? 'Bridge 4560 就绪' : '本地离线模式'}</span>
+          </div>
+
+          <button
+            onClick={() => setIsGuideOpen(true)}
+            className="px-2 py-0.5 rounded border border-[#DCD5C9] bg-white hover:bg-[#F4F0EA] text-[#5C5549] hover:text-[#1E2024] text-xs flex items-center space-x-1 transition-colors cursor-pointer"
+            title="查看 NetDive 三步复盘操作指南"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-amber-600" />
+            <span className="font-medium">复盘指南</span>
+          </button>
         </div>
       </header>
 
       {/* 视图内容区：状态隔离且不丢失 Live 状态 */}
-      {activeTab === 'live' ? (
+      {activeTab === 'overview' ? (
+        <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
+          <Suspense fallback={<PageLoadingHint label="正在装载项目概览" />}>
+            <OverviewPage
+              onNavigate={handleTabChange}
+              bridgeConnected={bridge.isConnected}
+            />
+          </Suspense>
+        </div>
+      ) : activeTab === 'live' ? (
         <div className="flex-1 flex w-full min-h-0 overflow-hidden">
           {/* 左侧任务会话侧边栏 (Master) */}
           <SessionListSidebar
             sessions={displaySessionsList}
             activeSessionId={activeSessionId}
             importInputRef={importInputRef}
+            bridgeConnected={bridge.isConnected}
             onSelectSession={async (sid) => {
               setContextMenu(null)
               setIsHealthReportOpen(false)
@@ -580,20 +689,28 @@ function MainFlowCanvas() {
               setSelectedTurnForDrawer(null)
               setActiveDrilldownTurnId(null)
 
-              // 1. 已是当前会话且画布已有事件时无需重复加载；空态下仍要补载账本
+              // 1. 已是当前会话且画布已有事件时无需重复加载
               if (activeSessionId === sid && totalNodesCount > 0) return
 
               // 2. 立即激活选中状态 (侧边栏高亮即时生效)
               setActiveSessionId(sid)
 
-              // 3. 演示沙盒会话直通
+              // 3. 默认 Ghost 重构案卷
               if (sid === 'demo-session' || sid === 'default-session') {
                 setRawEvents(defaultMockEvents)
                 setWatermark(BASE_CONTEXT_WATERMARK)
                 return
               }
 
-              // 4. 真实本地会话：直取该 sid 的物理账本，现场解析直给，彻底消灭错位与空状态
+              // 4. 精选 Showcase 场景直通（宏微双焦 / 死循环自愈 / 微压缩 / 人机门禁）
+              const scenario = SHOWCASE_SCENARIOS.find((sc) => sc.id === sid)
+              if (scenario) {
+                setRawEvents(scenario.events)
+                setWatermark(BASE_CONTEXT_WATERMARK)
+                return
+              }
+
+              // 5. 真实本地/导入会话：从本地 Bridge 取物理账本现场解析
               const text = await bridge.fetchSessionTranscript(sid)
               if (text && text.trim()) {
                 const parsed = parseTranscript(text)
@@ -601,7 +718,7 @@ function MainFlowCanvas() {
                 setWatermark(parsed.watermark || BASE_CONTEXT_WATERMARK)
               }
             }}
-            onImportJsonl={(content) => {
+            onImportJsonl={(content, fileName) => {
               setContextMenu(null)
               setIsHealthReportOpen(false)
               setSelectedDetailsNode(null)
@@ -609,7 +726,20 @@ function MainFlowCanvas() {
               setSelectedTurnForDrawer(null)
               setActiveDrilldownTurnId(null)
               const parsed = parseTranscript(content)
-              setActiveSessionId(parsed.session.sessionId || parsed.session.id || `session-${Date.now()}`)
+              const newSid = parsed.session.sessionId || parsed.session.id || `imported-${Date.now()}`
+              const displayTitle = fileName ? fileName.replace(/\.jsonl$/i, '') : (parsed.events[0]?.title || '导入的本地账本')
+              const displayActors = parsed.session.agentName ? [parsed.session.agentName] : ['Local Agent']
+              const newSessionItem: ActiveSessionItem = {
+                id: newSid,
+                title: displayTitle,
+                actors: displayActors,
+                status: 'completed',
+                nodeCount: parsed.events.length,
+                updatedAt: Date.now(),
+                project: parsed.session.cwdBase || '本地账本',
+              }
+              setImportedSessions((prev) => [newSessionItem, ...prev.filter((s) => s.id !== newSid)])
+              setActiveSessionId(newSid)
               setRawEvents(parsed.events)
               setWatermark(parsed.watermark || BASE_CONTEXT_WATERMARK)
             }}
@@ -811,12 +941,48 @@ function MainFlowCanvas() {
                 ) : null}
 
                 <ReactFlow
-                  nodes={visibleNodes}
+                  nodes={activeFlowNodes}
                   edges={visibleEdges}
                   nodeTypes={nodeTypes}
-                  onNodesChange={handleDerivedNodesChange}
+                  onNodesChange={handleFlowNodesChange}
                   onEdgesChange={onEdgesChange}
-                  onNodeClick={(_event, node) => {
+                  nodeDragThreshold={3}
+                  onPointerDown={(e) => {
+                    pointerDownPosRef.current = { x: e.clientX, y: e.clientY }
+                  }}
+                  onNodeDragStart={() => {
+                    hasNodeDraggedRef.current = false
+                  }}
+                  onNodeDrag={() => {
+                    hasNodeDraggedRef.current = true
+                    dragFinishedTimeRef.current = Date.now()
+                  }}
+                  onNodeDragStop={(_event, node) => {
+                    hasNodeDraggedRef.current = true
+                    dragFinishedTimeRef.current = Date.now()
+                    setTimeout(() => {
+                      hasNodeDraggedRef.current = false
+                    }, 500)
+                    // 固化保存最终位置覆盖，确保时光切片回放依然保留排版位置
+                    if (node.position) {
+                      setPositionOverrides((prev) => ({
+                        ...prev,
+                        [node.id]: node.position,
+                      }))
+                    }
+                  }}
+                  onNodeClick={(event, node) => {
+                    // 像素级位移防误触：只要位移超过 5px，或处于拖拽后 500ms 内，坚决不触发点击展开抽屉
+                    const dist = pointerDownPosRef.current
+                      ? Math.hypot(
+                          event.clientX - pointerDownPosRef.current.x,
+                          event.clientY - pointerDownPosRef.current.y
+                        )
+                      : 0
+                    if (dist > 5 || hasNodeDraggedRef.current || Date.now() - dragFinishedTimeRef.current < 500) {
+                      return
+                    }
+
                     if (node.type === 'turnNode') {
                       const turn = macroTurns.find((t) => t.turnId === node.id)
                       if (turn) {
@@ -843,7 +1009,6 @@ function MainFlowCanvas() {
                   fitViewOptions={{ padding: 0.2, minZoom: 0.65 }}
                   minZoom={0.65}
                   maxZoom={1.5}
-                  onlyRenderVisibleElements
                 >
                   <Controls className="!bg-white !border-[#E5E0D8] !shadow-xs" />
                   <MiniMap
@@ -1071,16 +1236,24 @@ function MainFlowCanvas() {
             onResolve={resolveCurrentGate}
           />
         </div>
-      ) : activeTab === 'context' ? (
+      ) : activeTab === 'regression' ? (
         <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
-          <Suspense fallback={<PageLoadingHint label="正在装载上下文演进实验台" />}>
-            <ContextLabPage />
+          <Suspense fallback={<PageLoadingHint label="正在装载回归工作台" />}>
+            <RegressionPage
+              events={rawEvents}
+              watermark={watermark}
+              sessionId={activeSessionId}
+              sessionTitle={displaySessionsList.find((s) => s.id === activeSessionId)?.title}
+              localSessions={bridge.localSessions}
+              onFetchTranscript={bridge.fetchSessionTranscript}
+              onRefreshLocalSessions={bridge.fetchLocalSessions}
+            />
           </Suspense>
         </div>
       ) : (
         <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
-          <Suspense fallback={<PageLoadingHint label="正在装载算法沙盒" />}>
-            <CompactorLabPage />
+          <Suspense fallback={<PageLoadingHint label="正在装载上下文演进实验台" />}>
+            <ContextLabPage />
           </Suspense>
         </div>
       )}
@@ -1099,11 +1272,81 @@ function MainFlowCanvas() {
 
       {/* 复盘诊断报告抽屉：与水位检查器并列，便于对照画布节点看证据 */}
       <ContextHealthReportDrawer
-        isOpen={isHealthReportOpen}
+        isOpen={isHealthReportOpen && activeTab === 'live'}
         onClose={() => setIsHealthReportOpen(false)}
         report={healthReport}
         sessionTitle={displaySessionsList.find((s) => s.id === activeSessionId)?.title}
       />
+
+      {/* 复盘操作指引弹窗 (Quick Guide Modal) */}
+      {isGuideOpen && (
+        <div className="fixed inset-0 z-50 bg-[#1E2024]/40 backdrop-blur-xs flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
+          <div className="bg-[#FAF8F5] border border-[#E5E0D8] rounded-xl shadow-xl max-w-xl w-full p-5 text-[#1E2024] relative">
+            <button
+              onClick={() => setIsGuideOpen(false)}
+              className="absolute top-4 right-4 p-1 rounded-md text-[#8F887D] hover:text-[#1E2024] hover:bg-[#EAE4D9] transition-colors cursor-pointer"
+              title="关闭指南"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center space-x-2 mb-1">
+              <Compass className="w-5 h-5 text-amber-600" />
+              <h3 className="text-base font-bold text-[#1E2024]">NetDive 三步上手指南</h3>
+            </div>
+            <p className="text-xs text-[#706A5F] mb-4">
+              纯本地运行的 AI Agent 执行过程与 Token 消耗可视化复盘工具
+            </p>
+
+            <div className="space-y-3 text-xs">
+              {/* 第一步 */}
+              <div className="p-3 bg-white border border-[#E5E0D8] rounded-lg">
+                <div className="flex items-center space-x-2 font-semibold text-[#1E2024] mb-1">
+                  <span className="w-4 h-4 rounded-full bg-indigo-100 text-indigo-800 text-[10px] flex items-center justify-center font-mono">1</span>
+                  <span>看执行步骤与报错分支</span>
+                </div>
+                <p className="text-[#5C5549] leading-relaxed">
+                  画布以流程图还原 Agent 执行过程。蓝色节点代表正常步骤，琥珀色分支代表单测或命令报错后的重试与修复。点击任一节点右侧滑出详细输入输出。
+                </p>
+              </div>
+
+              {/* 第二步 */}
+              <div className="p-3 bg-white border border-[#E5E0D8] rounded-lg">
+                <div className="flex items-center space-x-2 font-semibold text-[#1E2024] mb-1">
+                  <span className="w-4 h-4 rounded-full bg-amber-100 text-amber-800 text-[10px] flex items-center justify-center font-mono">2</span>
+                  <span>查 Token 水位与超长输出</span>
+                </div>
+                <p className="text-[#5C5549] leading-relaxed">
+                  点击底部彩色水位条，展开查看系统提示词、长期记忆与工具输出等各类内容的 Token 占比；快速定位哪次调用塞爆了上下文。
+                </p>
+              </div>
+
+              {/* 第三步 */}
+              <div className="p-3 bg-white border border-[#E5E0D8] rounded-lg">
+                <div className="flex items-center space-x-2 font-semibold text-[#1E2024] mb-1">
+                  <span className="w-4 h-4 rounded-full bg-emerald-100 text-emerald-800 text-[10px] flex items-center justify-center font-mono">3</span>
+                  <span>导出现场与测试对比</span>
+                </div>
+                <p className="text-[#5C5549] leading-relaxed">
+                  点击顶部的「复制现场」可一键将当前步骤生成诊断报告；切换至顶部「测试对比」，把失败记录存为用例，改完提示词或代码重跑后验证是否彻底修复。
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-[#EAE4D9] flex items-center justify-between">
+              <span className="text-[11px] text-[#8F887D] font-mono">
+                💡 侧边栏可随时拖入本地 ~/.pi/agent/sessions/*.jsonl
+              </span>
+              <button
+                onClick={() => setIsGuideOpen(false)}
+                className="px-4 py-1.5 rounded-lg bg-[#1E2024] text-white hover:bg-[#32363D] text-xs font-semibold transition-colors cursor-pointer"
+              >
+                开始复盘
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -196,7 +196,7 @@ export const NodeDetailsDrawer: React.FC<NodeDetailsDrawerProps> = ({
                 )}
               </button>
             </div>
-            <pre className="p-3 bg-[#F4F0EA] border border-[#E5E0D8] rounded-lg text-[#1E2024] font-mono text-[11px] overflow-x-auto leading-normal select-all">
+            <pre className="p-3 bg-[#F4F0EA] border border-[#E5E0D8] rounded-lg text-[#1E2024] font-mono text-[11px] overflow-x-auto max-h-52 overflow-y-auto leading-normal select-all">
               {JSON.stringify(payload, null, 2)}
             </pre>
           </div>

@@ -11,7 +11,8 @@
   --ink-border-focus: #1E2024;
 }
 
-body {
+html, body {
+  scrollbar-gutter: stable;
   background-color: var(--bg-paper);
   color: var(--ink-primary);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -20,6 +21,22 @@ body {
   overflow: hidden;
   user-select: none;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Custom sleek scrollbar for bounded containers (Anti-Jitter / Zero CLS) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #D8D2C6;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #B8B0A0;
 }
 
 /* 底部悬浮抽屉上滑动画 (Bottom Sheet Slide Up) */
@@ -58,3 +75,35 @@ body {
   background-image: radial-gradient(#D6D0C5 1px, transparent 1px);
   background-size: 20px 20px;
 }
+
+/* -------------------------------------------------------------------------- */
+/* React Flow 拖拽透视与因果连线高对比度强化                                    */
+/* -------------------------------------------------------------------------- */
+
+/* 1. 拖拽节点半透明毛玻璃透视：彻底消除实体白底遮挡连线与下层节点的问题 */
+.react-flow__node.dragging {
+  opacity: 0.85 !important;
+  cursor: grabbing !important;
+  box-shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.22), 0 0 0 2px rgba(30, 32, 36, 0.2) !important;
+  transform-origin: center center;
+  transition: opacity 120ms ease, box-shadow 120ms ease !important;
+}
+
+/* 2. 连线层透视与对比度强化：2px 线宽 + 微投影，确保在点状底纹与卡片边缘清晰可辨 */
+.react-flow__edges {
+  pointer-events: none !important;
+}
+
+.react-flow__edge-path {
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+  stroke-width: 2px !important;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.12));
+}
+
+/* 3. 拖拽时连接桩高亮反馈 */
+.react-flow__node.dragging .react-flow__handle {
+  transform: scale(1.3);
+  transition: transform 120ms ease;
+}
+
