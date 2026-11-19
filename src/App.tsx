@@ -37,6 +37,9 @@ import { SessionListSidebar } from './components/SessionListSidebar'
 const CompactorLabPage = lazy(() =>
   import('./pages/CompactorLabPage').then((mod) => ({ default: mod.CompactorLabPage }))
 )
+const ContextLabPage = lazy(() =>
+  import('./pages/ContextLabPage').then((mod) => ({ default: mod.ContextLabPage }))
+)
 const ShowcasePage = lazy(() =>
   import('./pages/ShowcasePage').then((mod) => ({ default: mod.ShowcasePage }))
 )
@@ -1014,9 +1017,15 @@ function MainFlowCanvas() {
             onResolve={resolveCurrentGate}
           />
         </div>
+      ) : activeTab === 'context' ? (
+        <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
+          <Suspense fallback={<PageLoadingHint label="正在装载上下文演进实验台" />}>
+            <ContextLabPage />
+          </Suspense>
+        </div>
       ) : (
         <div className="flex-1 flex flex-col w-full min-h-0 overflow-hidden">
-          <Suspense fallback={<PageLoadingHint label="正在装载压缩沙盒" />}>
+          <Suspense fallback={<PageLoadingHint label="正在装载算法沙盒" />}>
             <CompactorLabPage />
           </Suspense>
         </div>

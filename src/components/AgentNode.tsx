@@ -61,6 +61,17 @@ export interface AgentNodeData {
   outputLineCount?: number
   outputChars?: number
   hasDiff?: boolean
+  /** 演练沙盒交互扩展：大体积工具截断操作钩子 */
+  onToggleCompact?: () => void
+  hasLargePayload?: boolean
+  largePayloadLines?: number
+  /** 演练沙盒交互扩展：前半段打包精简操作钩子 */
+  onTogglePruneStageOne?: () => void
+  isSafeBoundary?: boolean
+  isStageOnePruned?: boolean
+  /** 演练沙盒交互扩展：连续同构调用折叠/展开钩子 */
+  onToggleCoalesce?: () => void
+  subCallCount?: number
   [key: string]: unknown
 }
 
@@ -323,7 +334,20 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
           <span className="truncate max-w-[120px] font-medium text-purple-700" title={`WAL: ${walId}`}>
             WAL: {walId}
           </span>
-          <span className="text-emerald-800 font-semibold">节约 86.5%</span>
+          {typeof nodeData.onToggleCompact === 'function' ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                nodeData.onToggleCompact?.()
+              }}
+              className="text-emerald-800 font-semibold hover:underline cursor-pointer flex items-center space-x-0.5"
+              title="点击展开还原原文"
+            >
+              <span>还原原文</span>
+            </button>
+          ) : (
+            <span className="text-emerald-800 font-semibold">节约 86.5%</span>
+          )}
         </div>
 
         {/* React Flow 右侧输出连接桩 */}
@@ -424,6 +448,69 @@ export const AgentNode: React.FC<NodeProps> = ({ data, selected }) => {
           <span className="inline-block w-1.5 h-3 ml-0.5 bg-indigo-500 animate-pulse align-middle" />
         )}
       </div>
+
+      {/* 演练交互：大体积输出快捷掐头去尾按钮 */}
+      {nodeData.hasLargePayload && typeof nodeData.onToggleCompact === 'function' && (
+        <div className="mb-2 pt-1 border-t border-amber-200/60">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              nodeData.onToggleCompact?.()
+            }}
+            className="w-full py-1 px-2 rounded bg-amber-500 hover:bg-amber-600 text-white font-sans text-[11px] font-semibold flex items-center justify-center space-x-1.5 shadow-2xs transition-colors cursor-pointer"
+            title="一键只留前后各15行，把中间繁琐日志存入内存"
+          >
+            <Scissors className="w-3 h-3 text-white" />
+            <span>掐头去尾截断 ({nodeData.largePayloadLines}行)</span>
+          </button>
+        </div>
+      )}
+
+      {/* 演练交互：前半段任务收网，一键打包精简前序历史 */}
+      {nodeData.isSafeBoundary && typeof nodeData.onTogglePruneStageOne === 'function' && (
+        <div className="mb-2 pt-1 border-t border-emerald-200/60">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              nodeData.onTogglePruneStageOne?.()
+            }}
+            className={`w-full py-1 px-2 rounded font-sans text-[11px] font-semibold flex items-center justify-center space-x-1.5 shadow-2xs transition-colors cursor-pointer ${
+              nodeData.isStageOnePruned
+                ? 'bg-slate-700 hover:bg-slate-800 text-white'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+            }`}
+            title="前半截素材提纯与润色已定稿，将前序草稿打包精简为结构化摘要，大幅释放空间"
+          >
+            <Sparkles className="w-3 h-3 text-emerald-200" />
+            <span>{nodeData.isStageOnePruned ? '已打包精简前半段 (点击展开)' : '前半段定稿：一键打包精简 (-3.2k)'}</span>
+          </button>
+        </div>
+      )}
+
+      {/* 演练交互：连续同构调用折叠/展开（展开态第一个子节点折叠，聚合态展开） */}
+      {typeof nodeData.onToggleCoalesce === 'function' && (
+        <div className="mb-2 pt-1 border-t border-sky-200/60">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              nodeData.onToggleCoalesce?.()
+            }}
+            className={`w-full py-1 px-2 rounded font-sans text-[11px] font-semibold flex items-center justify-center space-x-1.5 shadow-2xs transition-colors cursor-pointer ${
+              nodeData.isAggregated
+                ? 'bg-slate-600 hover:bg-slate-700 text-white'
+                : 'bg-sky-500 hover:bg-sky-600 text-white'
+            }`}
+            title={nodeData.isAggregated
+              ? '展开这个聚合节点，还原为多次独立的同构工具调用'
+              : '把连续的同构工具调用折叠为一个聚合节点，消除重复 Schema 样板'}
+          >
+            <Layers className="w-3 h-3 text-white" />
+            <span>{nodeData.isAggregated
+              ? `已聚合 x${nodeData.aggregateCount || 2} (点击展开)`
+              : `折叠重复调用 (x${nodeData.subCallCount || 2})`}</span>
+          </button>
+        </div>
+      )}
 
       {/* 底部元数据：执行主体与状态 */}
       <div className="flex items-center justify-between pt-1.5 border-t border-[#F0EBE1] text-[10px] text-[#8F887D] font-mono">
